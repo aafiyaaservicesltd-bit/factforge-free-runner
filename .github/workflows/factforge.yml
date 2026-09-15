@@ -24,7 +24,7 @@ jobs:
       FACTFORGE_URL: https://factforge-ai.stony-dove-6282.chatgpt.site
       OLLAMA_MODEL: qwen2.5:3b
       PIPER_VOICE: en_US-lessac-medium
-      PIPER_DATA_DIR: ${{ runner.temp }}/piper-voices
+      PIPER_DATA_DIR: /tmp/piper-voices
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out runner
