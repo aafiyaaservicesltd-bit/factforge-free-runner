@@ -1,0 +1,70 @@
+name: FactForge free runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "17 */4 * * *"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: factforge-free-runner
+  cancel-in-progress: false
+
+jobs:
+  produce:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      FACTFORGE_URL: https://factforge-ai.stony-dove-6282.chatgpt.site
+      OLLAMA_MODEL: qwen2.5:3b
+      PIPER_VOICE: en_US-lessac-medium
+      PIPER_DATA_DIR: ${{ runner.temp }}/piper-voices
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check out runner
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache local model
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen25-3b-v1
+
+      - name: Install free local tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          curl --proto '=https' --tlsv1.2 -fsSL https://ollama.com/install.sh | sh
+          mkdir -p "$PIPER_DATA_DIR"
+          python -m piper.download_voices --data-dir "$PIPER_DATA_DIR" "$PIPER_VOICE"
+
+      - name: Start local Qwen model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve >"$RUNNER_TEMP/ollama.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          ollama pull "$OLLAMA_MODEL"
+
+      - name: Run one guarded production job
+        run: python runner.py
