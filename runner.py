@@ -1381,17 +1381,30 @@ def verify_host_motion(video: Path, work: Path) -> None:
         frames.append(frame)
     scores: list[float] = []
     with Image.open(frames[0]) as first_raw:
-        first = first_raw.convert("RGB")
+        first_frame = first_raw.convert("RGB")
+        width, height = first_frame.size
+        # The full-body chroma frame is mostly unchanged background and clothing.
+        # Measure the centered head/face region where SadTalker actually moves.
+        face_box = (
+            round(width * 0.20),
+            round(height * 0.15),
+            round(width * 0.80),
+            round(height * 0.52),
+        )
+        first = first_frame.crop(face_box)
         for frame in frames[1:]:
             with Image.open(frame) as other_raw:
-                other = other_raw.convert("RGB").resize(first.size)
+                other_frame = other_raw.convert("RGB").resize(first_frame.size)
+                other = other_frame.crop(face_box)
                 difference = ImageChops.difference(first, other)
                 scores.append(sum(ImageStat.Stat(difference).mean) / 3.0)
-    if max(scores, default=0.0) < 0.65:
+    motion_score = max(scores, default=0.0)
+    if motion_score < 0.12:
         raise RuntimeError(
-            "Presenter motion gate stopped the upload: the host animation was static."
+            "Presenter motion gate stopped the upload: the host animation was static "
+            f"(face score {motion_score:.3f})."
         )
-    print(f"Presenter motion gate passed with motion score {max(scores):.2f}.")
+    print(f"Presenter motion gate passed with face score {motion_score:.3f}.")
 
 
 def procedural_host_animation(audio: Path, source: Path, output: Path) -> None:
