@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 FACTFORGE_URL = os.environ.get("FACTFORGE_URL", "").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
-PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-lessac-medium")
+PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-ljspeech-high")
 PIPER_DATA_DIR = os.environ.get("PIPER_DATA_DIR", "")
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "local")
 HOST_SHEET = Path(__file__).resolve().parent / "assets" / "factforge-host.webp"
@@ -45,36 +45,6 @@ TOPICS = [
     "the art of Thai fruit carving",
     "women artisans weaving traditional Thai textiles",
     "morning routines in a Thai neighborhood market",
-    "how bioluminescent bays glow",
-    "why ancient Roman concrete lasts",
-    "how migrating birds navigate",
-    "giant sequoia fire adaptations",
-    "the Antikythera mechanism",
-    "the story of the Voyager Golden Record",
-    "what ice cores reveal about ancient climates",
-    "life around deep sea hydrothermal vents",
-    "how basalt columns form",
-    "the science of fog harvesting",
-    "how desert varnish forms on rocks",
-    "the hidden ecosystem inside caves",
-    "how the first accurate marine chronometers worked",
-    "the science behind singing sand dunes",
-    "how tardigrades survive extreme conditions",
-    "the engineering of ancient aqueducts",
-    "how coral atolls form",
-    "why some lakes turn pink",
-    "the natural history of amber fossils",
-    "how tree rings preserve environmental history",
-    "the geometry of snow crystals",
-    "how octopuses change color",
-    "the origin of the metric system",
-    "how lighthouses developed their unique signals",
-    "the discovery of plate tectonics",
-    "how paper was made in the ancient world",
-    "the science of auroras",
-    "how seed vaults preserve crop diversity",
-    "why whale songs travel so far",
-    "the story of the first deep ocean expeditions",
 ]
 
 PROHIBITED = re.compile(
@@ -99,6 +69,8 @@ PREFERRED_HOST_PARTS = (
     ".gov",
     ".edu",
     ".ac.uk",
+    ".ac.th",
+    ".go.th",
     "nasa.gov",
     "noaa.gov",
     "usgs.gov",
@@ -112,6 +84,9 @@ PREFERRED_HOST_PARTS = (
     "historymuseum",
     "museum",
     "observatory",
+    "tourismthailand.org",
+    "bangkokpost.com",
+    "unesco.org",
 )
 
 
@@ -218,6 +193,22 @@ def authority_rank(url: str) -> tuple[int, int]:
     return (0 if preferred else 1, len(url))
 
 
+def topical_link_rank(topic: str, url: str) -> tuple[int, int, int, int]:
+    blob = url.lower()
+    terms = [
+        word.lower()
+        for word in re.findall(r"[A-Za-z][A-Za-z'-]+", topic)
+        if len(word) >= 4
+        and word.lower()
+        not in {"everyday", "traditional", "preparing", "behind", "story"}
+    ]
+    if "thai" in terms or "thailand" in terms:
+        terms.extend(["bangkok", "amphawa", "damnoen", "khlong"])
+    hits = sum(term in blob for term in set(terms))
+    authority, length = authority_rank(url)
+    return (0 if hits else 1, authority, -hits, length)
+
+
 def wikipedia_candidates(topic: str) -> tuple[str, list[str]]:
     search = SESSION.get(
         "https://en.wikipedia.org/w/api.php",
@@ -235,30 +226,43 @@ def wikipedia_candidates(topic: str) -> tuple[str, list[str]]:
     rows = search.json().get("query", {}).get("search", [])
     if not rows:
         raise RuntimeError("Topic discovery returned no encyclopedia pages.")
-    title = rows[0]["title"]
+    titles = [str(row["title"]) for row in rows if row.get("title")][:5]
+    if not titles:
+        raise RuntimeError("Topic discovery returned no usable encyclopedia pages.")
     page = SESSION.get(
         "https://en.wikipedia.org/w/api.php",
         params={
             "action": "query",
             "format": "json",
             "prop": "extracts|extlinks",
-            "titles": title,
+            "titles": "|".join(titles),
             "explaintext": 1,
             "exintro": 1,
             "ellimit": "max",
+            "redirects": 1,
         },
         timeout=25,
     )
     page.raise_for_status()
     pages = page.json().get("query", {}).get("pages", {})
-    record = next(iter(pages.values()), {})
-    intro = str(record.get("extract", ""))
-    links = [
-        row.get("*")
-        for row in record.get("extlinks", [])
-        if isinstance(row, dict) and isinstance(row.get("*"), str)
-    ]
-    links = sorted({link for link in links if not blocked_source(link)}, key=authority_rank)
+    records = [record for record in pages.values() if isinstance(record, dict)]
+    records_by_title = {str(record.get("title", "")): record for record in records}
+    intro_record = next(
+        (records_by_title[title] for title in titles if title in records_by_title),
+        records[0] if records else {},
+    )
+    intro = str(intro_record.get("extract", ""))
+    links = []
+    for record in records:
+        links.extend(
+            row.get("*")
+            for row in record.get("extlinks", [])
+            if isinstance(row, dict) and isinstance(row.get("*"), str)
+        )
+    links = sorted(
+        {link for link in links if not blocked_source(link)},
+        key=lambda link: topical_link_rank(topic, link),
+    )
     return intro, links
 
 
@@ -310,6 +314,37 @@ def extract_source(url: str) -> dict[str, str]:
     }
 
 
+def source_relevant(topic: str, source: dict[str, str]) -> bool:
+    haystack = f"{source['title']} {source['excerpt'][:4_000]}".lower()
+    terms = [
+        word.lower()
+        for word in re.findall(r"[A-Za-z][A-Za-z'-]+", topic)
+        if word.lower()
+        not in {
+            "a",
+            "an",
+            "and",
+            "art",
+            "behind",
+            "day",
+            "everyday",
+            "how",
+            "in",
+            "of",
+            "the",
+            "traditional",
+        }
+        and len(word) >= 4
+    ]
+    terms = list(dict.fromkeys(terms))
+    thai_topic = "thai" in terms or "thailand" in terms
+    if thai_topic and not re.search(r"\bthai(?:land|land's)?\b", haystack):
+        return False
+    concept_terms = [term for term in terms if term not in {"thai", "thailand"}]
+    hits = sum(bool(re.search(rf"\b{re.escape(term)}", haystack)) for term in concept_terms)
+    return hits >= (1 if thai_topic else min(2, max(1, len(concept_terms))))
+
+
 def discover_sources(job_id: str, focus: str) -> tuple[str, str, list[dict[str, str]]]:
     seed = int(hashlib.sha256(f"{job_id}:{RUN_ID}".encode()).hexdigest()[:12], 16)
     ordered_topics = TOPICS[:]
@@ -330,6 +365,8 @@ def discover_sources(job_id: str, focus: str) -> tuple[str, str, list[dict[str, 
                     source = extract_source(link)
                 except Exception as error:  # A single publisher must not stop discovery.
                     last_error = str(error)
+                    continue
+                if not source_relevant(topic, source):
                     continue
                 host = normalized_host(source["url"])
                 if host in seen_hosts:
@@ -568,7 +605,10 @@ Allowed source evidence:
 
 
 def plain_text(value: str) -> str:
-    return " ".join(BeautifulSoup(html.unescape(value), "html.parser").get_text(" ").split())
+    decoded = html.unescape(value)
+    if "<" in decoded and ">" in decoded:
+        decoded = BeautifulSoup(decoded, "html.parser").get_text(" ")
+    return " ".join(decoded.split())
 
 
 def commons_license(metadata: dict[str, Any]) -> tuple[str, str] | None:
@@ -626,7 +666,11 @@ def commons_images(query: str, limit: int) -> list[dict[str, str]]:
     response.raise_for_status()
     pages = response.json().get("query", {}).get("pages", {})
     candidates: list[dict[str, str]] = []
-    for page in pages.values():
+    ordered_pages = sorted(
+        (page for page in pages.values() if isinstance(page, dict)),
+        key=lambda page: int(page.get("index", 1_000_000) or 1_000_000),
+    )
+    for page in ordered_pages:
         info_rows = page.get("imageinfo", []) if isinstance(page, dict) else []
         if not info_rows:
             continue
@@ -672,9 +716,8 @@ def commons_images(query: str, limit: int) -> list[dict[str, str]]:
     return candidates
 
 
-def image_search_query(topic: str, scene: dict[str, Any]) -> str:
-    combined = f"{topic} {scene.get('onScreenText', '')}"
-    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]+", combined)
+def image_search_terms(value: str, limit: int = 4) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]+", value)
     stop_words = {
         "a",
         "an",
@@ -687,6 +730,12 @@ def image_search_query(topic: str, scene: dict[str, Any]) -> str:
         "how",
         "in",
         "is",
+        "its",
+        "day",
+        "everyday",
+        "story",
+        "science",
+        "traditional",
         "of",
         "on",
         "the",
@@ -696,37 +745,96 @@ def image_search_query(topic: str, scene: dict[str, Any]) -> str:
         "with",
     }
     useful = [word for word in words if word.lower() not in stop_words]
-    return " ".join(useful[:10]) or str(topic)[:100]
+    return useful[:limit]
+
+
+def image_search_queries(topic: str, scenes: list[dict[str, Any]]) -> list[str]:
+    lowered = topic.lower()
+    queries: list[str] = []
+    if "thai" in lowered or "thailand" in lowered:
+        if "floating market" in lowered:
+            queries.extend(
+                [
+                    "Thailand floating market",
+                    "Thailand market vendors",
+                    "Thai food market",
+                ]
+            )
+        elif "curry" in lowered:
+            queries.extend(["Thai curry paste", "Thai cooking", "Thailand market spices"])
+        elif "sticky rice" in lowered or "rice" in lowered:
+            queries.extend(["Thai sticky rice", "Thai cooking", "Thailand food market"])
+        elif "fruit" in lowered:
+            queries.extend(["Thai fruit carving", "Thailand fruit market", "Thai artisans"])
+        elif "weav" in lowered or "textile" in lowered:
+            queries.extend(
+                ["Thailand traditional weaving", "Thai textile artisans", "Thailand daily life"]
+            )
+        elif "market" in lowered:
+            queries.extend(
+                ["Thailand market vendors", "Thai food market", "Thailand daily life"]
+            )
+        else:
+            queries.extend(["Thai cooking", "Thailand daily life", "Thailand market vendors"])
+
+    topic_terms = image_search_terms(topic)
+    if topic_terms:
+        queries.append(" ".join(topic_terms))
+        if len(topic_terms) > 2:
+            queries.append(" ".join(topic_terms[-3:]))
+
+    for scene in scenes[:4]:
+        scene_terms = image_search_terms(
+            f"{topic_terms[0] if topic_terms else ''} {scene.get('onScreenText', '')}",
+            4,
+        )
+        if len(scene_terms) >= 2:
+            queries.append(" ".join(scene_terms))
+
+    return list(dict.fromkeys(query.strip() for query in queries if query.strip()))[:8]
 
 
 def attach_rights_safe_images(pack: dict[str, Any]) -> None:
     scenes = pack["scenes"]
-    try:
-        candidates = commons_images(str(pack["topic"]), len(scenes) * 2)
-    except Exception:
-        candidates = []
-    used: set[str] = set()
-    for scene in scenes:
-        query = image_search_query(str(pack["topic"]), scene)
+    target = len(scenes) * 3
+    groups: list[list[dict[str, str]]] = []
+    known_urls: set[str] = set()
+    for query in image_search_queries(str(pack["topic"]), scenes):
         try:
-            scene_candidates = commons_images(query, 5)
+            query_candidates = commons_images(query, min(18, len(scenes) * 2))
         except Exception:
-            scene_candidates = []
-        candidate = next(
-            (
-                item
-                for item in [*scene_candidates, *candidates]
-                if item["url"] not in used
-            ),
-            None,
-        )
-        if not candidate:
-            continue
-        scene["imageUrl"] = candidate["url"]
-        scene["mediaCreator"] = candidate["creator"]
-        scene["mediaLicense"] = candidate["license"]
-        scene["mediaSourceUrl"] = candidate["sourceUrl"]
-        used.add(candidate["url"])
+            query_candidates = []
+        group: list[dict[str, str]] = []
+        for candidate in query_candidates:
+            if candidate["url"] in known_urls:
+                continue
+            group.append(candidate)
+            known_urls.add(candidate["url"])
+        if group:
+            groups.append(group)
+        if len(known_urls) >= target:
+            break
+
+    candidates: list[dict[str, str]] = []
+    for candidate_index in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if candidate_index < len(group):
+                candidates.append(group[candidate_index])
+
+    print(
+        f"Found {len(candidates)} rights-safe image candidates for "
+        f"{len(scenes)} scenes."
+    )
+    if not candidates:
+        return
+    for index, scene in enumerate(scenes):
+        ordered = candidates[index:] + candidates[:index]
+        scene["_imageCandidates"] = ordered
+        primary = ordered[0]
+        scene["imageUrl"] = primary["url"]
+        scene["mediaCreator"] = primary["creator"]
+        scene["mediaLicense"] = primary["license"]
+        scene["mediaSourceUrl"] = primary["sourceUrl"]
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -879,7 +987,7 @@ def add_consistent_host(
     total: int,
     dimensions: tuple[int, int],
 ) -> Image.Image:
-    if index not in {0, total - 1} or not HOST_SHEET.exists():
+    if not HOST_SHEET.exists():
         return base
     cooking_story = bool(
         re.search(
@@ -888,7 +996,13 @@ def add_consistent_host(
             re.IGNORECASE,
         )
     )
-    pose_index = 0 if index == 0 else (2 if cooking_story else 1)
+    if index == 0:
+        pose_index = 0
+    elif index == total - 1:
+        pose_index = 2 if cooking_story else 1
+    else:
+        pose_cycle = (2, 1, 0) if cooking_story else (1, 0, 2)
+        pose_index = pose_cycle[(index - 1) % len(pose_cycle)]
     crop_bounds = ((0.0, 0.384), (0.384, 0.676), (0.676, 1.0))
     with Image.open(HOST_SHEET) as sheet_raw:
         sheet = sheet_raw.convert("RGBA")
@@ -905,13 +1019,20 @@ def add_consistent_host(
     if alpha_box:
         pose = pose.crop(alpha_box)
     width, height = dimensions
+    endpoint = index in {0, total - 1}
+    portrait = height > width
     target = (
-        round(width * (0.54 if height > width else 0.34)),
-        round(height * (0.50 if height > width else 0.72)),
+        round(width * ((0.48 if endpoint else 0.39) if portrait else 0.27)),
+        round(height * ((0.48 if endpoint else 0.41) if portrait else 0.68)),
     )
     pose.thumbnail(target, Image.Resampling.LANCZOS)
-    x = width - pose.width - round(width * 0.025) if index == 0 else round(width * 0.025)
-    y = height - pose.height + round(height * 0.018)
+    host_on_right = index % 2 == 0
+    x = (
+        width - pose.width - round(width * 0.025)
+        if host_on_right
+        else round(width * 0.025)
+    )
+    y = height - pose.height + round(height * 0.012)
     shadow = Image.new("RGBA", dimensions, (0, 0, 0, 0))
     shadow_alpha = pose.getchannel("A").filter(
         ImageFilter.GaussianBlur(max(6, width // 90))
@@ -930,16 +1051,57 @@ def build_slide(
     total: int,
     dimensions: tuple[int, int],
     work: Path,
+    used_sources: set[str],
 ) -> Path:
     width, height = dimensions
     raw_path = work / f"source-{index:02d}.img"
-    source_url = scene.get("imageUrl")
-    has_source = isinstance(source_url, str) and download_image(source_url, raw_path)
+    stored_candidate = {
+        "url": scene.get("imageUrl"),
+        "creator": scene.get("mediaCreator"),
+        "license": scene.get("mediaLicense"),
+        "sourceUrl": scene.get("mediaSourceUrl"),
+    }
+    raw_candidates = scene.get("_imageCandidates", [])
+    candidates = raw_candidates if isinstance(raw_candidates, list) else []
+    if isinstance(stored_candidate["url"], str):
+        candidates = [stored_candidate, *candidates]
+
+    selected: dict[str, str] | None = None
+    attempted: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        source_url = candidate.get("url")
+        if (
+            not isinstance(source_url, str)
+            or source_url in attempted
+            or source_url in used_sources
+        ):
+            continue
+        attempted.add(source_url)
+        if download_image(source_url, raw_path):
+            selected = {
+                "url": source_url,
+                "creator": str(candidate.get("creator", "Wikimedia Commons contributor")),
+                "license": str(candidate.get("license", "")),
+                "sourceUrl": str(candidate.get("sourceUrl", "")),
+            }
+            used_sources.add(source_url)
+            break
+
+    has_source = selected is not None
     if has_source:
         with Image.open(raw_path) as raw:
             base = documentary_canvas(raw, dimensions)
+        scene["imageUrl"] = selected["url"]
+        scene["mediaCreator"] = selected["creator"]
+        scene["mediaLicense"] = selected["license"]
+        scene["mediaSourceUrl"] = selected["sourceUrl"]
     else:
         base = gradient_canvas(width, height, index)
+        for key in ("imageUrl", "mediaCreator", "mediaLicense", "mediaSourceUrl"):
+            scene.pop(key, None)
+    scene["_sourceUsed"] = has_source
 
     base = Image.alpha_composite(
         base.convert("RGBA"), cinematic_overlay(dimensions)
@@ -1020,7 +1182,7 @@ def wav_seconds(path: Path) -> float:
         return audio.getnframes() / float(audio.getframerate())
 
 
-def caption_chunks(value: str, max_words: int = 5) -> list[str]:
+def caption_chunks(value: str, max_words: int = 3) -> list[str]:
     words = value.split()
     if not words:
         return []
@@ -1035,21 +1197,48 @@ def caption_chunks(value: str, max_words: int = 5) -> list[str]:
     return chunks
 
 
-def srt_timestamp(seconds: float) -> str:
-    milliseconds = max(0, round(seconds * 1000))
-    hours, remainder = divmod(milliseconds, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    secs, millis = divmod(remainder, 1_000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+def ass_timestamp(seconds: float) -> str:
+    centiseconds = max(0, round(seconds * 100))
+    hours, remainder = divmod(centiseconds, 360_000)
+    minutes, remainder = divmod(remainder, 6_000)
+    secs, centis = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 
-def write_captions(pack: dict[str, Any], output: Path) -> None:
+def write_captions(
+    pack: dict[str, Any],
+    output: Path,
+    dimensions: tuple[int, int],
+    video_format: str,
+) -> None:
+    width, height = dimensions
+    font_size = 36 if video_format == "short" else 34
+    margin_lr = 54 if video_format == "short" else 70
+    margin_v = 260 if video_format == "short" else 58
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+ScaledBorderAndShadow: yes
+WrapStyle: 2
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,DejaVu Sans,{font_size},&H00FFFFFF,&H00FFFFFF,&HC0000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,{margin_lr},{margin_lr},{margin_v},1
+Style: CaptionLeft,DejaVu Sans,{font_size},&H00FFFFFF,&H00FFFFFF,&HC0000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,1,54,320,{margin_v},1
+Style: CaptionRight,DejaVu Sans,{font_size},&H00FFFFFF,&H00FFFFFF,&HC0000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,3,320,105,{margin_v},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
     entries: list[str] = []
     timeline = 0.0
-    sequence = 1
-    for scene in pack["scenes"]:
+    for scene_index, scene in enumerate(pack["scenes"]):
         duration = float(scene["durationSeconds"])
         chunks = caption_chunks(str(scene["narration"]))
+        caption_style = "Caption"
+        if video_format == "short":
+            caption_style = "CaptionLeft" if scene_index % 2 == 0 else "CaptionRight"
         available = max(0.5, duration - 0.32)
         total_words = max(1, sum(len(chunk.split()) for chunk in chunks))
         position = timeline + 0.12
@@ -1058,15 +1247,15 @@ def write_captions(pack: dict[str, Any], output: Path) -> None:
             end = position + share
             if chunk_index == len(chunks) - 1:
                 end = timeline + duration - 0.12
-            clean = re.sub(r"\s+", " ", chunk).strip().replace("-->", "→")
+            clean = re.sub(r"\s+", " ", chunk).strip()
+            clean = clean.replace("{", "(").replace("}", ")")
             entries.append(
-                f"{sequence}\n{srt_timestamp(position)} --> {srt_timestamp(end)}\n"
-                f"{clean}\n"
+                f"Dialogue: 0,{ass_timestamp(position)},{ass_timestamp(end)},"
+                f"{caption_style},,0,0,0,,{clean}"
             )
-            sequence += 1
             position = end
         timeline += duration
-    output.write_text("\n".join(entries), encoding="utf-8")
+    output.write_text(header + "\n".join(entries) + "\n", encoding="utf-8")
 
 
 def atempo_chain(value: float) -> str:
@@ -1114,11 +1303,37 @@ def synthesize_scene(text: str, output: Path) -> None:
 def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
     dimensions = (720, 1280) if video_format == "short" else (1280, 720)
     width, height = dimensions
-    scene_files: list[Path] = []
+    if not HOST_SHEET.exists():
+        raise RuntimeError("The consistent FactForge host asset was missing.")
+    used_sources: set[str] = set()
+    slides: list[Path] = []
     for index, scene in enumerate(pack["scenes"]):
-        slide = build_slide(
-            scene, str(pack["title"]), index, len(pack["scenes"]), dimensions, work
+        slides.append(
+            build_slide(
+                scene,
+                str(pack["title"]),
+                index,
+                len(pack["scenes"]),
+                dimensions,
+                work,
+                used_sources,
+            )
         )
+    sourced_scenes = sum(bool(scene.get("_sourceUsed")) for scene in pack["scenes"])
+    required_scenes = max(1, (len(pack["scenes"]) * 2 + 2) // 3)
+    if sourced_scenes < required_scenes:
+        raise RuntimeError(
+            "Visual quality gate stopped the upload: only "
+            f"{sourced_scenes} of {len(pack['scenes'])} scenes received real imagery; "
+            f"at least {required_scenes} are required."
+        )
+    print(
+        f"Visual quality gate passed with {sourced_scenes} of "
+        f"{len(pack['scenes'])} sourced scenes."
+    )
+
+    scene_files: list[Path] = []
+    for index, (scene, slide) in enumerate(zip(pack["scenes"], slides, strict=True)):
         audio = work / f"voice-{index:02d}.wav"
         synthesize_scene(str(scene["narration"]), audio)
         target = int(scene["durationSeconds"])
@@ -1224,18 +1439,10 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
         ],
         timeout=300,
     )
-    captions = work / "captions.srt"
-    write_captions(pack, captions)
+    captions = work / "captions.ass"
+    write_captions(pack, captions, dimensions, video_format)
     caption_path = captions.as_posix().replace("\\", "/").replace(":", r"\:")
-    font_size = 27 if video_format == "short" else 24
-    margin_v = 190 if video_format == "short" else 54
-    subtitle_filter = (
-        f"subtitles=filename='{caption_path}':"
-        "force_style='FontName=DejaVu Sans,"
-        f"FontSize={font_size},Bold=1,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&HC0000000,BorderStyle=1,Outline=3,Shadow=0,"
-        f"Alignment=2,MarginL=48,MarginR=48,MarginV={margin_v}'"
-    )
+    subtitle_filter = f"ass=filename='{caption_path}'"
     output = work / "factforge.mp4"
     run(
         [
@@ -1268,6 +1475,14 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
     if size < 20_000 or size > 95 * 1024 * 1024:
         raise RuntimeError("The finished MP4 fell outside the upload size limit.")
     return output
+
+
+def remove_internal_scene_fields(pack: dict[str, Any]) -> None:
+    for scene in pack.get("scenes", []):
+        if not isinstance(scene, dict):
+            continue
+        scene.pop("_imageCandidates", None)
+        scene.pop("_sourceUsed", None)
 
 
 def upload_video(job_id: str, path: Path) -> None:
@@ -1327,12 +1542,6 @@ def main() -> int:
         if action == "create":
             pack = generate_content_pack(job)
             attach_rights_safe_images(pack)
-            factforge_request(
-                "POST",
-                f"/api/free-runner/jobs/{job_id}/metadata",
-                payload={"pack": pack},
-                timeout=120,
-            )
         elif action == "render" and isinstance(job.get("pack"), dict):
             pack = job["pack"]
         else:
@@ -1340,6 +1549,14 @@ def main() -> int:
 
         with tempfile.TemporaryDirectory(prefix="factforge-") as temporary:
             mp4 = render_video(pack, str(job["format"]), Path(temporary))
+            if action == "create":
+                remove_internal_scene_fields(pack)
+                factforge_request(
+                    "POST",
+                    f"/api/free-runner/jobs/{job_id}/metadata",
+                    payload={"pack": pack},
+                    timeout=120,
+                )
             upload_video(job_id, mp4)
         factforge_request(
             "POST", f"/api/free-runner/jobs/{job_id}/publish", timeout=900

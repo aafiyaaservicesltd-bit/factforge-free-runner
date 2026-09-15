@@ -6,10 +6,17 @@ Piper text-to-speech, rights-safe Wikimedia Commons media, and FFmpeg. Public
 domain, CC0, and attribution-only CC BY images are supported; media credits are
 added automatically to every YouTube description.
 
-The renderer creates mobile-safe layouts, slow documentary motion, burned-in
-captions, normalized narration, and an original graphic fallback when no usable
-Commons image is available. Every production uses the same original fictional
-adult Thai host in its opening and closing scenes for consistent channel identity.
+The renderer creates mobile-safe layouts, slow documentary motion, restrained
+burned-in captions, and normalized narration with a higher-quality public-domain
+female voice model. Every production uses the same original fictional adult Thai
+host in every scene for consistent channel identity.
+The default topic rotation now stays with Thai food, markets, crafts, and
+respectful everyday-life stories.
+
+Before any upload, the visual quality gate requires real, rights-safe imagery in
+at least two thirds of the scenes. Wikimedia searches use short topic-specific
+queries and multiple download fallbacks. A job fails privately instead of
+uploading a narration-only video when the imagery threshold is not met.
 
 The workflow authenticates to FactForge with GitHub Actions OIDC. There are no
 repository secrets to add: the Google refresh token stays encrypted in the

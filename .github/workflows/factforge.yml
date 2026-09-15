@@ -23,7 +23,7 @@ jobs:
     env:
       FACTFORGE_URL: https://factforge-ai.stony-dove-6282.chatgpt.site
       OLLAMA_MODEL: qwen2.5:3b
-      PIPER_VOICE: en_US-lessac-medium
+      PIPER_VOICE: en_US-ljspeech-high
       PIPER_DATA_DIR: /tmp/piper-voices
       PYTHONUNBUFFERED: "1"
     steps:
