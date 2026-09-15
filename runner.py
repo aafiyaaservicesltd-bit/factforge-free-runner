@@ -19,13 +19,24 @@ from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from PIL import (
+    Image,
+    ImageChops,
+    ImageDraw,
+    ImageEnhance,
+    ImageFilter,
+    ImageFont,
+    ImageOps,
+    ImageStat,
+)
 
 
 FACTFORGE_URL = os.environ.get("FACTFORGE_URL", "").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-ljspeech-high")
 PIPER_DATA_DIR = os.environ.get("PIPER_DATA_DIR", "")
+SADTALKER_DIR = Path(os.environ.get("SADTALKER_DIR", "/tmp/factforge-sadtalker"))
+HOST_ANIMATOR = os.environ.get("HOST_ANIMATOR", "sadtalker").strip().lower()
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "local")
 HOST_SHEET = Path(__file__).resolve().parent / "assets" / "factforge-host.webp"
 USER_AGENT = (
@@ -979,34 +990,15 @@ def cinematic_overlay(dimensions: tuple[int, int]) -> Image.Image:
     return overlay
 
 
-def add_consistent_host(
-    base: Image.Image,
-    *,
-    title: str,
-    index: int,
-    total: int,
-    dimensions: tuple[int, int],
-) -> Image.Image:
+def host_pose(pose_index: int) -> Image.Image:
+    """Return one transparent pose from the channel's original fictional host."""
+
     if not HOST_SHEET.exists():
-        return base
-    cooking_story = bool(
-        re.search(
-            r"\b(thai|cook|food|dish|curry|rice|market|kitchen|recipe)\b",
-            title,
-            re.IGNORECASE,
-        )
-    )
-    if index == 0:
-        pose_index = 0
-    elif index == total - 1:
-        pose_index = 2 if cooking_story else 1
-    else:
-        pose_cycle = (2, 1, 0) if cooking_story else (1, 0, 2)
-        pose_index = pose_cycle[(index - 1) % len(pose_cycle)]
+        raise RuntimeError("The consistent FactForge host asset was missing.")
     crop_bounds = ((0.0, 0.384), (0.384, 0.676), (0.676, 1.0))
     with Image.open(HOST_SHEET) as sheet_raw:
         sheet = sheet_raw.convert("RGBA")
-        left_ratio, right_ratio = crop_bounds[pose_index]
+        left_ratio, right_ratio = crop_bounds[pose_index % len(crop_bounds)]
         pose = sheet.crop(
             (
                 round(sheet.width * left_ratio),
@@ -1018,30 +1010,19 @@ def add_consistent_host(
     alpha_box = pose.getchannel("A").getbbox()
     if alpha_box:
         pose = pose.crop(alpha_box)
-    width, height = dimensions
-    endpoint = index in {0, total - 1}
-    portrait = height > width
-    target = (
-        round(width * ((0.48 if endpoint else 0.39) if portrait else 0.27)),
-        round(height * ((0.48 if endpoint else 0.41) if portrait else 0.68)),
-    )
-    pose.thumbnail(target, Image.Resampling.LANCZOS)
-    host_on_right = index % 2 == 0
-    x = (
-        width - pose.width - round(width * 0.025)
-        if host_on_right
-        else round(width * 0.025)
-    )
-    y = height - pose.height + round(height * 0.012)
-    shadow = Image.new("RGBA", dimensions, (0, 0, 0, 0))
-    shadow_alpha = pose.getchannel("A").filter(
-        ImageFilter.GaussianBlur(max(6, width // 90))
-    )
-    shadow_shape = Image.new("RGBA", pose.size, (0, 0, 0, 150))
-    shadow_shape.putalpha(shadow_alpha)
-    shadow.alpha_composite(shadow_shape, (x + max(4, width // 120), y + 4))
-    shadow.alpha_composite(pose, (x, y))
-    return Image.alpha_composite(base.convert("RGBA"), shadow).convert("RGB")
+    return pose
+
+
+def build_host_animation_source(output: Path) -> None:
+    """Create a clean chroma-key source for the audio-driven presenter."""
+
+    pose = host_pose(0)
+    pose.thumbnail((474, 742), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (512, 768), (0, 255, 0))
+    x = (canvas.width - pose.width) // 2
+    y = canvas.height - pose.height
+    canvas.paste(pose, (x, y), pose)
+    canvas.save(output, format="PNG", optimize=True)
 
 
 def build_slide(
@@ -1106,13 +1087,6 @@ def build_slide(
     base = Image.alpha_composite(
         base.convert("RGBA"), cinematic_overlay(dimensions)
     ).convert("RGB")
-    base = add_consistent_host(
-        base,
-        title=title,
-        index=index,
-        total=total,
-        dimensions=dimensions,
-    )
 
     draw = ImageDraw.Draw(base)
     margin = max(42, round(width * 0.065))
@@ -1238,7 +1212,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         chunks = caption_chunks(str(scene["narration"]))
         caption_style = "Caption"
         if video_format == "short":
-            caption_style = "CaptionLeft" if scene_index % 2 == 0 else "CaptionRight"
+            caption_style = "CaptionLeft"
         available = max(0.5, duration - 0.32)
         total_words = max(1, sum(len(chunk.split()) for chunk in chunks))
         position = timeline + 0.12
@@ -1267,7 +1241,9 @@ def atempo_chain(value: float) -> str:
     return ",".join(f"atempo={factor:.5f}" for factor in factors)
 
 
-def run(command: list[str], timeout: int = 600) -> None:
+def run(
+    command: list[str], timeout: int = 600, *, cwd: Path | None = None
+) -> None:
     completed = subprocess.run(
         command,
         check=False,
@@ -1275,6 +1251,7 @@ def run(command: list[str], timeout: int = 600) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
+        cwd=str(cwd) if cwd else None,
     )
     if completed.returncode:
         tail = completed.stdout[-1_500:].replace("\n", " ")
@@ -1298,6 +1275,221 @@ def synthesize_scene(text: str, output: Path) -> None:
         ],
         timeout=180,
     )
+
+
+def presenter_timing(pack: dict[str, Any]) -> tuple[float, float, float]:
+    durations = [float(scene["durationSeconds"]) for scene in pack["scenes"]]
+    if len(durations) < 2:
+        raise RuntimeError("The storyboard needs opening and closing presenter scenes.")
+    intro = min(8.0, durations[0])
+    outro = min(8.0, durations[-1])
+    outro_start = sum(durations[:-1])
+    return intro, outro_start, outro
+
+
+def build_presenter_audio(
+    assembled: Path, pack: dict[str, Any], output: Path
+) -> tuple[float, float, float]:
+    intro, outro_start, outro = presenter_timing(pack)
+    audio_filter = (
+        f"[0:a]atrim=start=0:end={intro:.3f},asetpts=PTS-STARTPTS[intro];"
+        f"[0:a]atrim=start={outro_start:.3f}:"
+        f"end={outro_start + outro:.3f},asetpts=PTS-STARTPTS[outro];"
+        "[intro][outro]concat=n=2:v=0:a=1[presenter]"
+    )
+    run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(assembled),
+            "-filter_complex",
+            audio_filter,
+            "-map",
+            "[presenter]",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(output),
+        ],
+        timeout=180,
+    )
+    return intro, outro_start, outro
+
+
+def media_seconds(path: Path) -> float:
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    try:
+        duration = float(completed.stdout.strip())
+    except ValueError as error:
+        raise RuntimeError("The animated presenter duration could not be verified.") from error
+    if completed.returncode or duration <= 0:
+        raise RuntimeError("The animated presenter media was invalid.")
+    return duration
+
+
+def verify_host_motion(video: Path, work: Path) -> None:
+    duration = media_seconds(video)
+    moments = (0.6, min(2.4, max(0.8, duration * 0.45)), min(4.2, max(1.2, duration * 0.78)))
+    frames: list[Path] = []
+    for index, moment in enumerate(moments):
+        frame = work / f"host-motion-{index}.png"
+        run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                f"{moment:.3f}",
+                "-i",
+                str(video),
+                "-frames:v",
+                "1",
+                str(frame),
+            ],
+            timeout=90,
+        )
+        frames.append(frame)
+    scores: list[float] = []
+    with Image.open(frames[0]) as first_raw:
+        first = first_raw.convert("RGB")
+        for frame in frames[1:]:
+            with Image.open(frame) as other_raw:
+                other = other_raw.convert("RGB").resize(first.size)
+                difference = ImageChops.difference(first, other)
+                scores.append(sum(ImageStat.Stat(difference).mean) / 3.0)
+    if max(scores, default=0.0) < 0.65:
+        raise RuntimeError(
+            "Presenter motion gate stopped the upload: the host animation was static."
+        )
+    print(f"Presenter motion gate passed with motion score {max(scores):.2f}.")
+
+
+def procedural_host_animation(audio: Path, source: Path, output: Path) -> None:
+    """Fast local-only stand-in used to test the compositing pipeline."""
+
+    duration = wav_seconds(audio)
+    frames = max(1, round(duration * 30))
+    run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-loop",
+            "1",
+            "-framerate",
+            "30",
+            "-i",
+            str(source),
+            "-i",
+            str(audio),
+            "-vf",
+            (
+                "zoompan=z='1.012+0.012*sin(on/19)':"
+                "x='iw/2-(iw/zoom/2)+3*sin(on/13)':"
+                "y='ih/2-(ih/zoom/2)+3*cos(on/17)':"
+                f"d=1:s=512x768:fps=30,trim=end_frame={frames},format=yuv420p"
+            ),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-t",
+            f"{duration:.3f}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "22",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            str(output),
+        ],
+        timeout=420,
+    )
+
+
+def animate_presenter(audio: Path, work: Path) -> Path:
+    source = work / "host-animation-source.png"
+    build_host_animation_source(source)
+    output = work / "animated-presenter.mp4"
+    if HOST_ANIMATOR == "procedural":
+        procedural_host_animation(audio, source, output)
+    else:
+        inference = SADTALKER_DIR / "inference.py"
+        checkpoint = SADTALKER_DIR / "checkpoints"
+        if not inference.exists() or not checkpoint.exists():
+            raise RuntimeError(
+                "The lifelike presenter engine was unavailable; no static-host video was uploaded."
+            )
+        result_dir = work / "presenter-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                sys.executable,
+                str(inference),
+                "--driven_audio",
+                str(audio),
+                "--source_image",
+                str(source),
+                "--checkpoint_dir",
+                str(checkpoint),
+                "--result_dir",
+                str(result_dir),
+                "--size",
+                "256",
+                "--preprocess",
+                "full",
+                "--pose_style",
+                "4",
+                "--expression_scale",
+                "1.08",
+                "--batch_size",
+                "1",
+                "--cpu",
+            ],
+            timeout=2_400,
+            cwd=SADTALKER_DIR,
+        )
+        results = sorted(result_dir.glob("*.mp4"), key=lambda path: path.stat().st_mtime)
+        if not results:
+            raise RuntimeError("The lifelike presenter engine returned no video.")
+        output.write_bytes(results[-1].read_bytes())
+    expected = wav_seconds(audio)
+    actual = media_seconds(output)
+    if actual < expected - 1.2:
+        raise RuntimeError("The animated presenter ended before the narration.")
+    verify_host_motion(output, work)
+    return output
 
 
 def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
@@ -1439,10 +1631,36 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
         ],
         timeout=300,
     )
+    presenter_audio = work / "presenter-audio.wav"
+    intro, outro_start, outro = build_presenter_audio(
+        assembled, pack, presenter_audio
+    )
+    presenter = animate_presenter(presenter_audio, work)
     captions = work / "captions.ass"
     write_captions(pack, captions, dimensions, video_format)
     caption_path = captions.as_posix().replace("\\", "/").replace(":", r"\:")
     subtitle_filter = f"ass=filename='{caption_path}'"
+    host_height = 620 if video_format == "short" else 500
+    host_margin = 10 if video_format == "short" else 28
+    host_end = intro + outro
+    filter_complex = (
+        "[1:v]setpts=PTS-STARTPTS,fps=30,"
+        "chromakey=0x00FF00:0.28:0.10,format=rgba,"
+        f"scale=-2:{host_height},split=2[host-intro-raw][host-outro-raw];"
+        f"[host-intro-raw]trim=start=0:end={intro:.3f},"
+        "setpts=PTS-STARTPTS[host-intro];"
+        f"[host-outro-raw]trim=start={intro:.3f}:end={host_end:.3f},"
+        f"setpts=PTS-STARTPTS+{outro_start:.3f}/TB[host-outro];"
+        "[0:v][host-intro]overlay="
+        f"x='main_w-overlay_w-{host_margin}+4*sin(1.35*t)':"
+        "y='main_h-overlay_h+8+5*sin(1.9*t)':"
+        "eof_action=pass:shortest=0[with-intro];"
+        "[with-intro][host-outro]overlay="
+        f"x='main_w-overlay_w-{host_margin}+4*sin(1.35*t)':"
+        "y='main_h-overlay_h+8+5*sin(1.9*t)':"
+        "eof_action=pass:shortest=0[hosted];"
+        f"[hosted]{subtitle_filter}[video]"
+    )
     output = work / "factforge.mp4"
     run(
         [
@@ -1453,8 +1671,16 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
             "-y",
             "-i",
             str(assembled),
-            "-vf",
-            subtitle_filter,
+            "-i",
+            str(presenter),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[video]",
+            "-map",
+            "0:a:0",
+            "-t",
+            f"{sum(float(scene['durationSeconds']) for scene in pack['scenes']):.3f}",
             "-c:v",
             "libx264",
             "-preset",

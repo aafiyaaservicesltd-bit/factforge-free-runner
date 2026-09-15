@@ -9,7 +9,9 @@ added automatically to every YouTube description.
 The renderer creates mobile-safe layouts, slow documentary motion, restrained
 burned-in captions, and normalized narration with a higher-quality public-domain
 female voice model. Every production uses the same original fictional adult Thai
-host in every scene for consistent channel identity.
+host for consistent channel identity. SadTalker animates her face, head, eyes,
+and mouth from the actual narration for a moving, lip-synced opening and closing;
+the renderer no longer pastes a static host cutout over every scene.
 The default topic rotation now stays with Thai food, markets, crafts, and
 respectful everyday-life stories.
 
@@ -17,6 +19,8 @@ Before any upload, the visual quality gate requires real, rights-safe imagery in
 at least two thirds of the scenes. Wikimedia searches use short topic-specific
 queries and multiple download fallbacks. A job fails privately instead of
 uploading a narration-only video when the imagery threshold is not met.
+An additional presenter-motion gate compares frames from the generated host clip.
+If the presenter is missing or static, the job also fails privately before upload.
 
 The workflow authenticates to FactForge with GitHub Actions OIDC. There are no
 repository secrets to add: the Google refresh token stays encrypted in the
