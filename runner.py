@@ -37,6 +37,9 @@ PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-ljspeech-high")
 PIPER_DATA_DIR = os.environ.get("PIPER_DATA_DIR", "")
 SADTALKER_DIR = Path(os.environ.get("SADTALKER_DIR", "/tmp/factforge-sadtalker"))
 HOST_ANIMATOR = os.environ.get("HOST_ANIMATOR", "sadtalker").strip().lower()
+PRESENTER_SEGMENT_SECONDS = max(
+    1.5, min(3.0, float(os.environ.get("PRESENTER_SEGMENT_SECONDS", "2.5")))
+)
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "local")
 HOST_SHEET = Path(__file__).resolve().parent / "assets" / "factforge-host.webp"
 USER_AGENT = (
@@ -1281,8 +1284,10 @@ def presenter_timing(pack: dict[str, Any]) -> tuple[float, float, float]:
     durations = [float(scene["durationSeconds"]) for scene in pack["scenes"]]
     if len(durations) < 2:
         raise RuntimeError("The storyboard needs opening and closing presenter scenes.")
-    intro = min(8.0, durations[0])
-    outro = min(8.0, durations[-1])
+    # Real audio-driven animation is CPU-heavy. Two short presenter appearances
+    # keep free hosted runners practical without falling back to a still image.
+    intro = min(PRESENTER_SEGMENT_SECONDS, durations[0])
+    outro = min(PRESENTER_SEGMENT_SECONDS, durations[-1])
     outro_start = sum(durations[:-1])
     return intro, outro_start, outro
 
