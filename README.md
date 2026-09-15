@@ -2,7 +2,14 @@
 
 This public GitHub Actions repository runs FactForge production without a paid
 text-generation, speech, or video-rendering API. It uses a local Qwen model,
-Piper text-to-speech, public-domain/CC0 Wikimedia media, and FFmpeg.
+Piper text-to-speech, rights-safe Wikimedia Commons media, and FFmpeg. Public
+domain, CC0, and attribution-only CC BY images are supported; media credits are
+added automatically to every YouTube description.
+
+The renderer creates mobile-safe layouts, slow documentary motion, burned-in
+captions, normalized narration, and an original graphic fallback when no usable
+Commons image is available. Every production uses the same original fictional
+adult Thai host in its opening and closing scenes for consistent channel identity.
 
 The workflow authenticates to FactForge with GitHub Actions OIDC. There are no
 repository secrets to add: the Google refresh token stays encrypted in the
@@ -19,7 +26,9 @@ FactForge Site, and the runner never receives it.
 4. Return to FactForge. The free runner should turn green after its heartbeat.
 
 The scheduled workflow checks every four hours and completes at most one video
-per run. GitHub may delay scheduled runs, and GitHub automatically disables
+per run. Public uploads require Autopilot to be armed. Explicitly queued private
+tests can run while Autopilot is paused, so quality can be reviewed safely.
+GitHub may delay scheduled runs, and GitHub automatically disables
 scheduled workflows in public repositories after prolonged repository
 inactivity. A missing heartbeat makes FactForge pause safely; it never falls
 back to a billable provider.

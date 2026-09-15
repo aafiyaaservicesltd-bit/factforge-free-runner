@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 
 FACTFORGE_URL = os.environ.get("FACTFORGE_URL", "").rstrip("/")
@@ -27,6 +27,7 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-lessac-medium")
 PIPER_DATA_DIR = os.environ.get("PIPER_DATA_DIR", "")
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "local")
+HOST_SHEET = Path(__file__).resolve().parent / "assets" / "factforge-host.webp"
 USER_AGENT = (
     "FactForgeFreeRunner/1.0 "
     "(+https://github.com/aafiyaaservicesltd-bit/factforge-free-runner)"
@@ -36,6 +37,14 @@ SESSION.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "en"})
 Image.MAX_IMAGE_PIXELS = 40_000_000
 
 TOPICS = [
+    "traditional Thai women preparing regional dishes",
+    "a day in a traditional Thai floating market",
+    "the craft behind Thai curry paste",
+    "how Thai families prepare sticky rice",
+    "everyday food traditions in northern Thailand",
+    "the art of Thai fruit carving",
+    "women artisans weaving traditional Thai textiles",
+    "morning routines in a Thai neighborhood market",
     "how bioluminescent bays glow",
     "why ancient Roman concrete lasts",
     "how migrating birds navigate",
@@ -472,8 +481,9 @@ def normalize_content_pack(
         "description": description[:4_000],
         "tags": clean_tags,
         "disclosure": (
-            "This video uses AI-assisted research, public-domain or original visuals, "
-            "and a synthetic narration voice. Sources were checked before publishing."
+            "This video uses AI-assisted research, original graphics or Wikimedia "
+            "Commons media under the licenses listed in the description, and a "
+            "synthetic narration voice. Sources were checked before publishing."
         ),
         "sources": source_records,
         "claims": normalized_claims,
@@ -520,8 +530,10 @@ Return one JSON object only with these keys:
   must be copied exactly from the supplied sources and genuinely support that claim.
 - scenes: exactly {scene_count} objects with narration, onScreenText, visualPrompt.
   Each narration must be {narration_words} words, onScreenText at most 8 words, and
-  visualPrompt must describe a rights-safe documentary image without people, logos,
-  brands, copyrighted characters, or text.
+  visualPrompt must describe a respectful, rights-safe documentary image. Adults may
+  appear naturally in cooking, market, craft, or daily-life scenes, but never depict
+  minors or sexualized people. Do not request logos, brands, copyrighted characters,
+  or text.
 
 The fixed scene durations in seconds are {durations}. Build a complete narrative arc:
 hook, context, evidence, explanation, surprising implication, and a satisfying ending.
@@ -559,7 +571,43 @@ def plain_text(value: str) -> str:
     return " ".join(BeautifulSoup(html.unescape(value), "html.parser").get_text(" ").split())
 
 
-def commons_images(query: str, limit: int) -> list[str]:
+def commons_license(metadata: dict[str, Any]) -> tuple[str, str] | None:
+    license_name = plain_text(
+        str(metadata.get("LicenseShortName", {}).get("value", ""))
+    )
+    usage_terms = plain_text(
+        str(metadata.get("UsageTerms", {}).get("value", ""))
+    )
+    license_url = plain_text(
+        str(metadata.get("LicenseUrl", {}).get("value", ""))
+    )
+    combined = f"{license_name} {usage_terms} {license_url}".lower()
+    if "cc0" in combined:
+        return (license_name or "CC0 1.0", "cc0")
+    if "public domain" in combined or "publicdomain" in combined:
+        return (license_name or "Public domain", "public-domain")
+    excluded = (
+        "by-sa",
+        "by-nc",
+        "by-nd",
+        "share alike",
+        "sharealike",
+        "noncommercial",
+        "non-commercial",
+        "no derivatives",
+        "noderivatives",
+    )
+    attribution_only = (
+        "cc by" in combined
+        or "creativecommons.org/licenses/by/" in combined
+        or "creative commons attribution" in combined
+    )
+    if attribution_only and not any(term in combined for term in excluded):
+        return (license_name or usage_terms or "CC BY", "cc-by")
+    return None
+
+
+def commons_images(query: str, limit: int) -> list[dict[str, str]]:
     response = SESSION.get(
         "https://commons.wikimedia.org/w/api.php",
         params={
@@ -567,60 +615,118 @@ def commons_images(query: str, limit: int) -> list[str]:
             "format": "json",
             "generator": "search",
             "gsrnamespace": 6,
-            "gsrlimit": min(40, max(12, limit * 3)),
-            "gsrsearch": f"{query} filetype:bitmap",
+            "gsrlimit": min(50, max(18, limit * 5)),
+            "gsrsearch": f"filetype:bitmap {query[:120]}",
             "prop": "imageinfo",
-            "iiprop": "url|extmetadata|mime",
+            "iiprop": "url|extmetadata|mime|size",
             "iiurlwidth": 1600,
         },
         timeout=25,
     )
     response.raise_for_status()
     pages = response.json().get("query", {}).get("pages", {})
-    urls: list[str] = []
+    candidates: list[dict[str, str]] = []
     for page in pages.values():
         info_rows = page.get("imageinfo", []) if isinstance(page, dict) else []
         if not info_rows:
             continue
         info = info_rows[0]
         metadata = info.get("extmetadata", {})
-        license_name = plain_text(str(metadata.get("LicenseShortName", {}).get("value", ""))).lower()
-        usage_terms = plain_text(str(metadata.get("UsageTerms", {}).get("value", ""))).lower()
-        if "cc0" not in license_name and "public domain" not in f"{license_name} {usage_terms}":
+        license_record = commons_license(metadata)
+        mime = str(info.get("mime", "")).lower()
+        width = int(info.get("width", 0) or 0)
+        height = int(info.get("height", 0) or 0)
+        if (
+            not license_record
+            or mime not in {"image/jpeg", "image/png", "image/webp"}
+            or min(width, height) < 600
+        ):
             continue
         candidate = info.get("thumburl") or info.get("url")
         if not isinstance(candidate, str) or not candidate.startswith("https://"):
             continue
         if not normalized_host(candidate).endswith("wikimedia.org"):
             continue
-        urls.append(candidate)
-        if len(urls) >= limit:
+        license_name, license_kind = license_record
+        creator = plain_text(str(metadata.get("Artist", {}).get("value", "")))
+        if license_kind == "cc-by" and not creator:
+            continue
+        if not creator:
+            creator = "Wikimedia Commons contributor"
+        source_url = str(info.get("descriptionurl", ""))
+        if (
+            not source_url.startswith("https://commons.wikimedia.org/")
+            or len(source_url) > 2_000
+        ):
+            continue
+        candidates.append(
+            {
+                "url": candidate,
+                "creator": creator[:300],
+                "license": license_name[:120],
+                "sourceUrl": source_url,
+            }
+        )
+        if len(candidates) >= limit:
             break
-    return urls
+    return candidates
+
+
+def image_search_query(topic: str, scene: dict[str, Any]) -> str:
+    combined = f"{topic} {scene.get('onScreenText', '')}"
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]+", combined)
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "of",
+        "on",
+        "the",
+        "to",
+        "what",
+        "why",
+        "with",
+    }
+    useful = [word for word in words if word.lower() not in stop_words]
+    return " ".join(useful[:10]) or str(topic)[:100]
 
 
 def attach_rights_safe_images(pack: dict[str, Any]) -> None:
     scenes = pack["scenes"]
     try:
-        candidates = commons_images(str(pack["topic"]), len(scenes))
+        candidates = commons_images(str(pack["topic"]), len(scenes) * 2)
     except Exception:
         candidates = []
     used: set[str] = set()
-    for index, scene in enumerate(scenes):
-        candidate = next((url for url in candidates if url not in used), None)
-        if candidate:
-            scene["imageUrl"] = candidate
-            used.add(candidate)
+    for scene in scenes:
+        query = image_search_query(str(pack["topic"]), scene)
+        try:
+            scene_candidates = commons_images(query, 5)
+        except Exception:
+            scene_candidates = []
+        candidate = next(
+            (
+                item
+                for item in [*scene_candidates, *candidates]
+                if item["url"] not in used
+            ),
+            None,
+        )
+        if not candidate:
             continue
-        if index < 4:
-            try:
-                extras = commons_images(str(scene["visualPrompt"]), 2)
-            except Exception:
-                extras = []
-            candidate = next((url for url in extras if url not in used), None)
-            if candidate:
-                scene["imageUrl"] = candidate
-                used.add(candidate)
+        scene["imageUrl"] = candidate["url"]
+        scene["mediaCreator"] = candidate["creator"]
+        scene["mediaLicense"] = candidate["license"]
+        scene["mediaSourceUrl"] = candidate["sourceUrl"]
+        used.add(candidate["url"])
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -687,7 +793,134 @@ def gradient_canvas(width: int, height: int, seed: int) -> Image.Image:
         ratio = y / max(1, height - 1)
         color = tuple(round(a + (b - a) * ratio) for a, b in zip(start, end, strict=True))
         draw.line((0, y, width, y), fill=color)
+    rng = random.Random(seed * 97 + width + height)
+    glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    for _ in range(7):
+        radius = rng.randint(round(width * 0.12), round(width * 0.42))
+        x = rng.randint(-radius, width)
+        y = rng.randint(-radius, height)
+        color = rng.choice(
+            [
+                (45, 212, 191, 54),
+                (56, 189, 248, 46),
+                (168, 85, 247, 42),
+                (251, 191, 36, 34),
+            ]
+        )
+        glow_draw.ellipse((x, y, x + radius * 2, y + radius * 2), fill=color)
+    glow = glow.filter(ImageFilter.GaussianBlur(max(24, width // 18)))
+    image = Image.alpha_composite(image.convert("RGBA"), glow).convert("RGB")
+    texture = ImageDraw.Draw(image)
+    for offset in range(-height, width, max(90, width // 7)):
+        texture.line(
+            (offset, height, offset + height, 0),
+            fill=(120, 220, 235),
+            width=1,
+        )
     return image
+
+
+def documentary_canvas(raw: Image.Image, dimensions: tuple[int, int]) -> Image.Image:
+    width, height = dimensions
+    source = ImageOps.exif_transpose(raw).convert("RGB")
+    source = ImageEnhance.Color(source).enhance(0.94)
+    source = ImageEnhance.Contrast(source).enhance(1.06)
+    source = ImageEnhance.Sharpness(source).enhance(1.12)
+    source_ratio = source.width / max(1, source.height)
+    canvas_ratio = width / max(1, height)
+    if 0.72 <= source_ratio / canvas_ratio <= 1.38:
+        return ImageOps.fit(source, dimensions, method=Image.Resampling.LANCZOS)
+
+    background = ImageOps.fit(
+        source, dimensions, method=Image.Resampling.LANCZOS
+    ).filter(ImageFilter.GaussianBlur(max(18, width // 28)))
+    background = ImageEnhance.Brightness(background).enhance(0.62)
+    foreground_bounds = (
+        round(width * 0.92),
+        round(height * (0.66 if height > width else 0.78)),
+    )
+    foreground = ImageOps.contain(
+        source, foreground_bounds, method=Image.Resampling.LANCZOS
+    )
+    x = (width - foreground.width) // 2
+    y = round(height * 0.19) + max(0, (foreground_bounds[1] - foreground.height) // 2)
+    mask = Image.new("L", foreground.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, foreground.width - 1, foreground.height - 1),
+        radius=max(16, width // 35),
+        fill=255,
+    )
+    background.paste(foreground, (x, y), mask)
+    return background
+
+
+def cinematic_overlay(dimensions: tuple[int, int]) -> Image.Image:
+    width, height = dimensions
+    overlay = Image.new("RGBA", dimensions, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    top_span = max(1, round(height * 0.38))
+    bottom_start = round(height * 0.62)
+    for y in range(height):
+        top_alpha = round(190 * max(0.0, 1 - y / top_span))
+        bottom_alpha = round(
+            175 * max(0.0, (y - bottom_start) / max(1, height - bottom_start))
+        )
+        alpha = max(top_alpha, bottom_alpha, 26)
+        draw.line((0, y, width, y), fill=(2, 8, 18, alpha))
+    return overlay
+
+
+def add_consistent_host(
+    base: Image.Image,
+    *,
+    title: str,
+    index: int,
+    total: int,
+    dimensions: tuple[int, int],
+) -> Image.Image:
+    if index not in {0, total - 1} or not HOST_SHEET.exists():
+        return base
+    cooking_story = bool(
+        re.search(
+            r"\b(thai|cook|food|dish|curry|rice|market|kitchen|recipe)\b",
+            title,
+            re.IGNORECASE,
+        )
+    )
+    pose_index = 0 if index == 0 else (2 if cooking_story else 1)
+    crop_bounds = ((0.0, 0.384), (0.384, 0.676), (0.676, 1.0))
+    with Image.open(HOST_SHEET) as sheet_raw:
+        sheet = sheet_raw.convert("RGBA")
+        left_ratio, right_ratio = crop_bounds[pose_index]
+        pose = sheet.crop(
+            (
+                round(sheet.width * left_ratio),
+                0,
+                round(sheet.width * right_ratio),
+                sheet.height,
+            )
+        )
+    alpha_box = pose.getchannel("A").getbbox()
+    if alpha_box:
+        pose = pose.crop(alpha_box)
+    width, height = dimensions
+    target = (
+        round(width * (0.54 if height > width else 0.34)),
+        round(height * (0.50 if height > width else 0.72)),
+    )
+    pose.thumbnail(target, Image.Resampling.LANCZOS)
+    x = width - pose.width - round(width * 0.025) if index == 0 else round(width * 0.025)
+    y = height - pose.height + round(height * 0.018)
+    shadow = Image.new("RGBA", dimensions, (0, 0, 0, 0))
+    shadow_alpha = pose.getchannel("A").filter(
+        ImageFilter.GaussianBlur(max(6, width // 90))
+    )
+    shadow_shape = Image.new("RGBA", pose.size, (0, 0, 0, 150))
+    shadow_shape.putalpha(shadow_alpha)
+    shadow.alpha_composite(shadow_shape, (x + max(4, width // 120), y + 4))
+    shadow.alpha_composite(pose, (x, y))
+    return Image.alpha_composite(base.convert("RGBA"), shadow).convert("RGB")
 
 
 def build_slide(
@@ -704,53 +937,78 @@ def build_slide(
     has_source = isinstance(source_url, str) and download_image(source_url, raw_path)
     if has_source:
         with Image.open(raw_path) as raw:
-            base = ImageOps.fit(ImageOps.exif_transpose(raw).convert("RGB"), dimensions)
-        base = ImageEnhance.Color(base).enhance(0.82)
-        overlay = Image.new("RGBA", dimensions, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        overlay_draw.rectangle((0, 0, width, height), fill=(2, 7, 18, 82))
-        overlay_draw.rectangle((0, height * 0.52, width, height), fill=(2, 7, 18, 168))
-        base = Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
+            base = documentary_canvas(raw, dimensions)
     else:
         base = gradient_canvas(width, height, index)
+
+    base = Image.alpha_composite(
+        base.convert("RGBA"), cinematic_overlay(dimensions)
+    ).convert("RGB")
+    base = add_consistent_host(
+        base,
+        title=title,
+        index=index,
+        total=total,
+        dimensions=dimensions,
+    )
 
     draw = ImageDraw.Draw(base)
     margin = max(42, round(width * 0.065))
     accent = (95, 229, 255)
-    muted = (190, 205, 224)
-    headline_size = max(38, round(width * (0.065 if width > height else 0.082)))
+    muted = (208, 222, 238)
+    headline_size = max(36, round(width * (0.045 if width > height else 0.064)))
     headline_font = font(headline_size, bold=True)
-    small_font = font(max(18, round(width * 0.022)))
-    badge_font = font(max(16, round(width * 0.018)), bold=True)
+    small_font = font(max(17, round(width * 0.020)))
+    brand_font = font(max(17, round(width * 0.020)), bold=True)
     lines = wrapped_lines(
         draw, str(scene["onScreenText"]), headline_font, width - margin * 2
-    )
-    line_height = round(headline_size * 1.18)
+    )[:3]
+    line_height = round(headline_size * 1.15)
     block_height = len(lines) * line_height
-    top = round(height * 0.58) - block_height // 2
-    draw.rounded_rectangle(
-        (margin - 18, top - 24, width - margin + 18, top + block_height + 28),
-        radius=24,
-        fill=(2, 8, 18, 178),
-        outline=(95, 229, 255, 65),
+    top = margin + max(68, round(height * 0.064))
+    panel = Image.new("RGBA", dimensions, (0, 0, 0, 0))
+    panel_draw = ImageDraw.Draw(panel)
+    panel_draw.rounded_rectangle(
+        (margin - 20, top - 20, width - margin + 20, top + block_height + 24),
+        radius=max(18, width // 42),
+        fill=(2, 9, 20, 142),
+        outline=(95, 229, 255, 52),
         width=2,
     )
+    base = Image.alpha_composite(base.convert("RGBA"), panel).convert("RGB")
+    draw = ImageDraw.Draw(base)
     for line_index, line in enumerate(lines):
-        box = draw.textbbox((0, 0), line, font=headline_font)
-        x = (width - (box[2] - box[0])) // 2
-        draw.text((x, top + line_index * line_height), line, font=headline_font, fill="white")
+        draw.text(
+            (margin, top + line_index * line_height),
+            line,
+            font=headline_font,
+            fill="white",
+            stroke_width=max(1, width // 500),
+            stroke_fill=(0, 0, 0),
+        )
 
-    badge = "PUBLIC DOMAIN / CC0" if has_source else "ORIGINAL FACTFORGE SLIDE"
-    draw.rounded_rectangle(
-        (margin, margin, margin + draw.textlength(badge, font=badge_font) + 30, margin + 38),
-        radius=18,
-        fill=(4, 17, 30),
-        outline=accent,
-        width=1,
+    brand = "FACTFORGE AI"
+    counter = f"{index + 1:02d} / {total:02d}"
+    draw.text((margin, margin), brand, font=brand_font, fill=accent)
+    counter_width = draw.textbbox((0, 0), counter, font=small_font)[2]
+    draw.text(
+        (width - margin - counter_width, margin),
+        counter,
+        font=small_font,
+        fill=muted,
     )
-    draw.text((margin + 15, margin + 8), badge, font=badge_font, fill=accent)
-    footer = f"{title[:72]}   •   {index + 1}/{total}"
-    draw.text((margin, height - margin - 28), footer, font=small_font, fill=muted)
+    line_y = margin + max(32, round(width * 0.038))
+    draw.rounded_rectangle(
+        (margin, line_y, width - margin, line_y + 4),
+        radius=2,
+        fill=(82, 108, 130),
+    )
+    progress_x = margin + round((width - margin * 2) * ((index + 1) / total))
+    draw.rounded_rectangle(
+        (margin, line_y, progress_x, line_y + 4),
+        radius=2,
+        fill=accent,
+    )
     output = work / f"slide-{index:02d}.png"
     base.save(output, format="PNG", optimize=True)
     raw_path.unlink(missing_ok=True)
@@ -760,6 +1018,55 @@ def build_slide(
 def wav_seconds(path: Path) -> float:
     with wave.open(str(path), "rb") as audio:
         return audio.getnframes() / float(audio.getframerate())
+
+
+def caption_chunks(value: str, max_words: int = 5) -> list[str]:
+    words = value.split()
+    if not words:
+        return []
+    count = max(1, (len(words) + max_words - 1) // max_words)
+    base, remainder = divmod(len(words), count)
+    chunks: list[str] = []
+    cursor = 0
+    for index in range(count):
+        size = base + (1 if index < remainder else 0)
+        chunks.append(" ".join(words[cursor : cursor + size]))
+        cursor += size
+    return chunks
+
+
+def srt_timestamp(seconds: float) -> str:
+    milliseconds = max(0, round(seconds * 1000))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def write_captions(pack: dict[str, Any], output: Path) -> None:
+    entries: list[str] = []
+    timeline = 0.0
+    sequence = 1
+    for scene in pack["scenes"]:
+        duration = float(scene["durationSeconds"])
+        chunks = caption_chunks(str(scene["narration"]))
+        available = max(0.5, duration - 0.32)
+        total_words = max(1, sum(len(chunk.split()) for chunk in chunks))
+        position = timeline + 0.12
+        for chunk_index, chunk in enumerate(chunks):
+            share = available * len(chunk.split()) / total_words
+            end = position + share
+            if chunk_index == len(chunks) - 1:
+                end = timeline + duration - 0.12
+            clean = re.sub(r"\s+", " ", chunk).strip().replace("-->", "→")
+            entries.append(
+                f"{sequence}\n{srt_timestamp(position)} --> {srt_timestamp(end)}\n"
+                f"{clean}\n"
+            )
+            sequence += 1
+            position = end
+        timeline += duration
+    output.write_text("\n".join(entries), encoding="utf-8")
 
 
 def atempo_chain(value: float) -> str:
@@ -817,12 +1124,33 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
         target = int(scene["durationSeconds"])
         audio_length = wav_seconds(audio)
         tempo = max(1.0, audio_length / max(1.0, target - 0.25))
-        audio_filter = f"{atempo_chain(tempo)},apad=pad_dur={target}"
+        fade_out = max(0.0, target - 0.28)
+        audio_filter = (
+            f"{atempo_chain(tempo)},"
+            "loudnorm=I=-16:TP=-1.5:LRA=11,"
+            f"apad=pad_dur={target},atrim=duration={target},"
+            f"afade=t=in:st=0:d=0.16,afade=t=out:st={fade_out:.2f}:d=0.28"
+        )
         scene_file = work / f"scene-{index:02d}.mp4"
+        frame_count = max(1, target * 30 - 1)
+        travel = f"min(1,on/{frame_count})"
+        x_motion = (
+            f"(iw-iw/zoom)*(1-{travel})"
+            if index % 2
+            else f"(iw-iw/zoom)*{travel}"
+        )
+        y_motion = (
+            f"(ih-ih/zoom)*{travel}"
+            if index % 3 == 1
+            else "ih/2-(ih/zoom/2)"
+        )
         video_filter = (
-            "zoompan=z='min(zoom+0.00035,1.055)':"
-            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-            f"d=1:s={width}x{height}:fps=30,format=yuv420p"
+            "zoompan=z='min(zoom+0.00028,1.065)':"
+            f"x='{x_motion}':y='{y_motion}':"
+            f"d=1:s={width}x{height}:fps=30,"
+            "fade=t=in:st=0:d=0.28:color=black,"
+            f"fade=t=out:st={max(0.0, target - 0.34):.2f}:d=0.34:color=black,"
+            "format=yuv420p"
         )
         run(
             [
@@ -854,7 +1182,7 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
                 "-preset",
                 "veryfast",
                 "-crf",
-                "27",
+                "24",
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -874,7 +1202,7 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
         "\n".join(f"file '{path.name}'" for path in scene_files) + "\n",
         encoding="utf-8",
     )
-    output = work / "factforge.mp4"
+    assembled = work / "assembled.mp4"
     run(
         [
             "ffmpeg",
@@ -892,9 +1220,49 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
             "copy",
             "-movflags",
             "+faststart",
-            str(output),
+            str(assembled),
         ],
         timeout=300,
+    )
+    captions = work / "captions.srt"
+    write_captions(pack, captions)
+    caption_path = captions.as_posix().replace("\\", "/").replace(":", r"\:")
+    font_size = 27 if video_format == "short" else 24
+    margin_v = 190 if video_format == "short" else 54
+    subtitle_filter = (
+        f"subtitles=filename='{caption_path}':"
+        "force_style='FontName=DejaVu Sans,"
+        f"FontSize={font_size},Bold=1,PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&HC0000000,BorderStyle=1,Outline=3,Shadow=0,"
+        f"Alignment=2,MarginL=48,MarginR=48,MarginV={margin_v}'"
+    )
+    output = work / "factforge.mp4"
+    run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(assembled),
+            "-vf",
+            subtitle_filter,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "24",
+            "-c:a",
+            "copy",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ],
+        timeout=420,
     )
     size = output.stat().st_size
     if size < 20_000 or size > 95 * 1024 * 1024:
