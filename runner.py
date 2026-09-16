@@ -33,7 +33,7 @@ from PIL import (
 
 FACTFORGE_URL = os.environ.get("FACTFORGE_URL", "").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
-PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-ljspeech-high")
+PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-hfc_female-medium")
 PIPER_DATA_DIR = os.environ.get("PIPER_DATA_DIR", "")
 SADTALKER_DIR = Path(os.environ.get("SADTALKER_DIR", "/tmp/factforge-sadtalker"))
 HOST_ANIMATOR = os.environ.get("HOST_ANIMATOR", "sadtalker").strip().lower()
@@ -50,16 +50,70 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "en"})
 Image.MAX_IMAGE_PIXELS = 40_000_000
 
-TOPICS = [
-    "traditional Thai women preparing regional dishes",
-    "a day in a traditional Thai floating market",
-    "the craft behind Thai curry paste",
-    "how Thai families prepare sticky rice",
-    "everyday food traditions in northern Thailand",
-    "the art of Thai fruit carving",
-    "women artisans weaving traditional Thai textiles",
-    "morning routines in a Thai neighborhood market",
+# The free runner is deliberately video-first. Each supported story has one
+# inspected Commons video, a fixed chronological shot plan, and exact search
+# terms. This prevents a generated script from being paired with unrelated
+# stock photos just because both contain the word "Thailand".
+VIDEO_PROFILES: list[dict[str, Any]] = [
+    {
+        "id": "bangkok-night-market",
+        "topic": "the foods and vendor craft of a Bangkok night market",
+        "focusTerms": ("market", "street food", "night", "vendor"),
+        "query": "10 Things to Eat at Rot Fai Night Market in Bangkok",
+        "requiredTitleTerms": ("rot fai", "night market", "bangkok"),
+        "clipStarts": (2.0, 16.0, 58.0, 70.0, 103.0, 121.0),
+        "visuals": (
+            "close-up introduction to food at Bangkok's Rot Fai night market",
+            "a vendor lifting cooked noodles from a bowl",
+            "hands preparing coconut-milk custard at a market stall",
+            "a vendor handling mango sticky rice",
+            "grilled seafood being finished at the stall",
+            "a bright watermelon dessert served in its rind",
+        ),
+    },
+    {
+        "id": "thai-basil-wok",
+        "topic": "how a Bangkok street-food cook prepares Thai basil squid stir-fry",
+        "focusTerms": (
+            "cook",
+            "cooking",
+            "daily chores",
+            "basil",
+            "stir fry",
+            "wok",
+            "women",
+        ),
+        "query": "Thai Basil Squid Stir Fry with Fried Egg Bangkok Street Food 2016",
+        "requiredTitleTerms": ("thai basil", "squid", "stir fry"),
+        "clipStarts": (5.0, 25.0, 90.0, 120.0, 148.0, 180.0),
+        "visuals": (
+            "overhead view of a street-food wok before cooking begins",
+            "a fried egg cooking in the hot wok",
+            "fresh chilli, basil, vegetables, and squid entering the wok",
+            "the cook rapidly stir-frying squid and vegetables",
+            "the sauce reducing as the ingredients are folded together",
+            "Thai basil squid served over rice with a fried egg",
+        ),
+    },
+    {
+        "id": "thai-siu-mai",
+        "topic": "how a Thai street-food vendor shapes and serves siu mai",
+        "focusTerms": ("dumpling", "siu mai", "siumai", "shumai"),
+        "query": "Thai street food Siumai How to Make Cantonese Dim Sum style Siu Mai",
+        "requiredTitleTerms": ("thai street food", "siumai", "siu mai"),
+        "clipStarts": (1.0, 14.0, 30.0, 48.0, 68.0, 92.0),
+        "visuals": (
+            "a Thai street-food vendor beginning a batch of siu mai",
+            "the vendor portioning filling onto wrappers",
+            "hands shaping individual siu mai dumplings",
+            "the vendor repeating the shaping technique at speed",
+            "finished siu mai arranged together on a banana leaf",
+            "a serving of siu mai presented with dipping sauce",
+        ),
+    },
 ]
+
+TOPICS = [str(profile["topic"]) for profile in VIDEO_PROFILES]
 
 PROHIBITED = re.compile(
     r"\b(election|candidate|president|prime minister|political party|war footage|"
@@ -359,12 +413,52 @@ def source_relevant(topic: str, source: dict[str, str]) -> bool:
     return hits >= (1 if thai_topic else min(2, max(1, len(concept_terms))))
 
 
+def video_profile_for_topic(topic: str) -> dict[str, Any] | None:
+    lowered = topic.lower()
+    for profile in VIDEO_PROFILES:
+        if lowered == str(profile["topic"]).lower():
+            return profile
+    best: tuple[int, dict[str, Any]] | None = None
+    for profile in VIDEO_PROFILES:
+        score = sum(
+            1
+            for term in profile["focusTerms"]
+            if str(term).lower() in lowered
+        )
+        if score and (best is None or score > best[0]):
+            best = (score, profile)
+    return best[1] if best else None
+
+
+def video_profile_for_focus(focus: str) -> dict[str, Any]:
+    lowered = focus.lower().strip()
+    best: tuple[int, dict[str, Any]] | None = None
+    for profile in VIDEO_PROFILES:
+        score = sum(
+            1
+            for term in profile["focusTerms"]
+            if str(term).lower() in lowered
+        )
+        if score and (best is None or score > best[0]):
+            best = (score, profile)
+    # The night-market profile has the widest range of visible actions and is
+    # the safest default for a broad request such as "Thai food".
+    return best[1] if best else VIDEO_PROFILES[0]
+
+
+def profile_visual_plan(profile: dict[str, Any], count: int) -> list[str]:
+    visuals = [str(value) for value in profile["visuals"]]
+    if count == len(visuals):
+        return visuals
+    return [visuals[min(len(visuals) - 1, index * len(visuals) // count)] for index in range(count)]
+
+
 def discover_sources(job_id: str, focus: str) -> tuple[str, str, list[dict[str, str]]]:
     seed = int(hashlib.sha256(f"{job_id}:{RUN_ID}".encode()).hexdigest()[:12], 16)
-    ordered_topics = TOPICS[:]
-    random.Random(seed).shuffle(ordered_topics)
-    if focus and focus.lower() not in {"interesting facts and stories", "general"}:
-        ordered_topics.insert(0, focus[:120])
+    selected_topic = str(video_profile_for_focus(focus)["topic"])
+    remaining_topics = [topic for topic in TOPICS if topic != selected_topic]
+    random.Random(seed).shuffle(remaining_topics)
+    ordered_topics = [selected_topic, *remaining_topics]
 
     last_error = "No topic passed the source gate."
     for topic in ordered_topics[:12]:
@@ -444,6 +538,7 @@ def normalize_content_pack(
     sources: list[dict[str, str]],
     durations: list[int],
     video_format: str,
+    visual_plan: list[str],
 ) -> dict[str, Any]:
     title = str(raw.get("title", "")).strip()
     description = str(raw.get("description", "")).strip()
@@ -493,7 +588,7 @@ def normalize_content_pack(
             raise RuntimeError("A storyboard scene was malformed.")
         narration = str(scene.get("narration", "")).strip()
         on_screen = str(scene.get("onScreenText", "")).strip()
-        visual = str(scene.get("visualPrompt", "")).strip()
+        visual = visual_plan[index]
         word_count = len(narration.split())
         max_words = 34 if video_format == "short" else 125
         if (
@@ -506,6 +601,31 @@ def normalize_content_pack(
             raise RuntimeError(f"Scene {index + 1} failed the narration limits.")
         if PROHIBITED.search(f"{narration} {on_screen} {visual}"):
             raise RuntimeError("A storyboard scene crossed the sensitive-topic gate.")
+        visible_terms = {
+            word.lower()
+            for word in re.findall(r"[A-Za-z][A-Za-z'-]+", visual)
+            if len(word) >= 4
+            and word.lower()
+            not in {
+                "beginning",
+                "bright",
+                "close-up",
+                "finished",
+                "hands",
+                "individual",
+                "overhead",
+                "rapidly",
+                "served",
+                "together",
+                "vendor",
+                "view",
+            }
+        }
+        written_scene = f"{narration} {on_screen}".lower()
+        if visible_terms and not any(term in written_scene for term in visible_terms):
+            raise RuntimeError(
+                f"Scene {index + 1} narration did not match its verified live shot."
+            )
         normalized_scenes.append(
             {
                 "narration": narration[:4_000],
@@ -532,9 +652,10 @@ def normalize_content_pack(
         "description": description[:4_000],
         "tags": clean_tags,
         "disclosure": (
-            "This video uses AI-assisted research, original graphics or Wikimedia "
-            "Commons media under the licenses listed in the description, and a "
-            "synthetic narration voice. Sources were checked before publishing."
+            "This video uses AI-assisted research, an original AI presenter, "
+            "Wikimedia Commons moving footage under the licenses listed in the "
+            "description, and a synthetic narration voice. Sources were checked "
+            "before publishing."
         ),
         "sources": source_records,
         "claims": normalized_claims,
@@ -555,6 +676,10 @@ def generate_content_pack(job: dict[str, Any]) -> dict[str, Any]:
     topic, encyclopedia_intro, sources = discover_sources(
         str(job["id"]), str(job.get("focus", ""))
     )
+    video_profile = video_profile_for_topic(topic)
+    if not video_profile:
+        raise RuntimeError("The selected topic had no inspected live-footage profile.")
+    visual_plan = profile_visual_plan(video_profile, scene_count)
     source_bundle = [
         {
             "title": source["title"],
@@ -581,13 +706,18 @@ Return one JSON object only with these keys:
   must be copied exactly from the supplied sources and genuinely support that claim.
 - scenes: exactly {scene_count} objects with narration, onScreenText, visualPrompt.
   Each narration must be {narration_words} words, onScreenText at most 8 words, and
-  visualPrompt must describe a respectful, rights-safe documentary image. Adults may
-  appear naturally in cooking, market, craft, or daily-life scenes, but never depict
-  minors or sexualized people. Do not request logos, brands, copyrighted characters,
-  or text.
+  visualPrompt must repeat the matching verified shot description below. The moving
+  footage is already chosen. Narration and on-screen text must describe what is
+  genuinely visible in that shot; never mention a different ingredient or action.
+  Adults may appear naturally in cooking, market, craft, or daily-life scenes, but
+  never depict minors or sexualized people. Do not request logos, brands, copyrighted
+  characters, or text.
 
 The fixed scene durations in seconds are {durations}. Build a complete narrative arc:
 hook, context, evidence, explanation, surprising implication, and a satisfying ending.
+
+Verified chronological live-footage plan (one line per scene):
+{chr(10).join(f"{index + 1}. {shot}" for index, shot in enumerate(visual_plan))}
 
 Encyclopedia discovery summary (not an allowed citation):
 {encyclopedia_intro}
@@ -612,6 +742,7 @@ Allowed source evidence:
                 sources=sources,
                 durations=durations,
                 video_format=video_format,
+                visual_plan=visual_plan,
             )
         except Exception as error:
             last_error = str(error)[:300]
@@ -728,6 +859,146 @@ def commons_images(query: str, limit: int) -> list[dict[str, str]]:
         if len(candidates) >= limit:
             break
     return candidates
+
+
+def commons_videos(query: str, limit: int) -> list[dict[str, Any]]:
+    response = SESSION.get(
+        "https://commons.wikimedia.org/w/api.php",
+        params={
+            "action": "query",
+            "format": "json",
+            "generator": "search",
+            "gsrnamespace": 6,
+            "gsrlimit": min(30, max(10, limit * 5)),
+            "gsrsearch": f"filetype:video {query[:160]}",
+            "prop": "imageinfo",
+            "iiprop": "url|extmetadata|mime|size",
+        },
+        timeout=35,
+    )
+    response.raise_for_status()
+    pages = response.json().get("query", {}).get("pages", {})
+    candidates: list[dict[str, Any]] = []
+    ordered_pages = sorted(
+        (page for page in pages.values() if isinstance(page, dict)),
+        key=lambda page: int(page.get("index", 1_000_000) or 1_000_000),
+    )
+    for page in ordered_pages:
+        info_rows = page.get("imageinfo", []) if isinstance(page, dict) else []
+        if not info_rows:
+            continue
+        info = info_rows[0]
+        metadata = info.get("extmetadata", {})
+        license_record = commons_license(metadata)
+        mime = str(info.get("mime", "")).lower()
+        width = int(info.get("width", 0) or 0)
+        height = int(info.get("height", 0) or 0)
+        duration = float(info.get("duration", 0) or 0)
+        size = int(info.get("size", 0) or 0)
+        if (
+            not license_record
+            or mime not in {"video/webm", "video/ogg", "application/ogg"}
+            or min(width, height) < 480
+            or duration < 20
+            or not 0 < size <= 85 * 1024 * 1024
+        ):
+            continue
+        candidate_url = info.get("url")
+        if not isinstance(candidate_url, str) or not candidate_url.startswith("https://"):
+            continue
+        if not normalized_host(candidate_url).endswith("wikimedia.org"):
+            continue
+        license_name, license_kind = license_record
+        creator = plain_text(str(metadata.get("Artist", {}).get("value", "")))
+        if license_kind == "cc-by" and not creator:
+            continue
+        if not creator:
+            creator = "Wikimedia Commons contributor"
+        source_url = str(info.get("descriptionurl", ""))
+        if (
+            not source_url.startswith("https://commons.wikimedia.org/")
+            or len(source_url) > 2_000
+        ):
+            continue
+        title = plain_text(
+            str(metadata.get("ObjectName", {}).get("value", page.get("title", "")))
+        )
+        description = plain_text(
+            str(metadata.get("ImageDescription", {}).get("value", ""))
+        )
+        categories = plain_text(
+            str(metadata.get("Categories", {}).get("value", "")).replace("|", " ")
+        )
+        candidates.append(
+            {
+                "url": candidate_url,
+                "creator": creator[:300],
+                "license": license_name[:120],
+                "sourceUrl": source_url,
+                "title": title[:500],
+                "searchText": f"{title} {description} {categories}"[:4_000],
+                "duration": duration,
+                "size": size,
+            }
+        )
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+def candidate_matches_profile(
+    candidate: dict[str, Any], profile: dict[str, Any]
+) -> bool:
+    haystack = str(candidate.get("searchText", candidate.get("title", ""))).lower()
+    required = [str(term).lower() for term in profile["requiredTitleTerms"]]
+    # Siumai has two common spellings, so one of those aliases is enough after
+    # the distinctly Thai-street-food phrase has matched.
+    if profile["id"] == "thai-siu-mai":
+        return "thai street food" in haystack and any(
+            alias in haystack for alias in ("siumai", "siu mai", "shumai")
+        )
+    return all(term in haystack for term in required)
+
+
+def attach_rights_safe_videos(pack: dict[str, Any]) -> None:
+    profile = video_profile_for_topic(str(pack["topic"]))
+    if not profile:
+        raise RuntimeError(
+            "Live-footage gate stopped the upload: this topic has no inspected video plan."
+        )
+    try:
+        candidates = commons_videos(str(profile["query"]), 8)
+    except Exception as error:
+        raise RuntimeError(
+            "Live-footage gate could not verify the Wikimedia source."
+        ) from error
+    matching = [
+        candidate
+        for candidate in candidates
+        if candidate_matches_profile(candidate, profile)
+    ]
+    if not matching:
+        raise RuntimeError(
+            "Live-footage gate stopped the upload: no license-safe video matched the story."
+        )
+    primary = matching[0]
+    scenes = pack["scenes"]
+    starts = [float(value) for value in profile["clipStarts"]]
+    visual_plan = profile_visual_plan(profile, len(scenes))
+    for index, scene in enumerate(scenes):
+        start_index = min(len(starts) - 1, index * len(starts) // len(scenes))
+        scene["visualPrompt"] = visual_plan[index]
+        scene["videoUrl"] = primary["url"]
+        scene["mediaCreator"] = primary["creator"]
+        scene["mediaLicense"] = primary["license"]
+        scene["mediaSourceUrl"] = primary["sourceUrl"]
+        scene["_videoCandidates"] = matching
+        scene["_clipStartSeconds"] = starts[start_index]
+        scene["_mediaMatch"] = str(profile["id"])
+    print(
+        "Live-footage semantic gate passed: "
+        f"{profile['id']} uses {primary['title']} for {len(scenes)} timed scenes."
+    )
 
 
 def image_search_terms(value: str, limit: int = 4) -> list[str]:
@@ -899,6 +1170,81 @@ def download_image(url: str, destination: Path) -> bool:
     except Exception:
         destination.unlink(missing_ok=True)
         return False
+
+
+def download_video(url: str, destination: Path) -> bool:
+    try:
+        response = SESSION.get(url, timeout=(25, 240), stream=True)
+        response.raise_for_status()
+        length = int(response.headers.get("content-length", "0") or 0)
+        if length and length > 85 * 1024 * 1024:
+            return False
+        received = 0
+        with destination.open("wb") as handle:
+            for chunk in response.iter_content(256 * 1024):
+                if not chunk:
+                    continue
+                received += len(chunk)
+                if received > 85 * 1024 * 1024:
+                    destination.unlink(missing_ok=True)
+                    return False
+                handle.write(chunk)
+        if received < 100_000:
+            destination.unlink(missing_ok=True)
+            return False
+        duration = media_seconds(destination)
+        if duration < 20:
+            destination.unlink(missing_ok=True)
+            return False
+        return True
+    except Exception:
+        destination.unlink(missing_ok=True)
+        return False
+
+
+def acquire_scene_video(
+    scene: dict[str, Any],
+    work: Path,
+    cache: dict[str, Path],
+) -> Path:
+    stored_candidate = {
+        "url": scene.get("videoUrl"),
+        "creator": scene.get("mediaCreator"),
+        "license": scene.get("mediaLicense"),
+        "sourceUrl": scene.get("mediaSourceUrl"),
+    }
+    raw_candidates = scene.get("_videoCandidates", [])
+    candidates = raw_candidates if isinstance(raw_candidates, list) else []
+    if isinstance(stored_candidate["url"], str):
+        candidates = [stored_candidate, *candidates]
+
+    attempted: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        source_url = candidate.get("url")
+        if not isinstance(source_url, str) or source_url in attempted:
+            continue
+        attempted.add(source_url)
+        if source_url in cache:
+            selected_path = cache[source_url]
+        else:
+            digest = hashlib.sha256(source_url.encode()).hexdigest()[:16]
+            selected_path = work / f"live-source-{digest}.media"
+            if not download_video(source_url, selected_path):
+                continue
+            cache[source_url] = selected_path
+        scene["videoUrl"] = source_url
+        scene["mediaCreator"] = str(
+            candidate.get("creator", "Wikimedia Commons contributor")
+        )
+        scene["mediaLicense"] = str(candidate.get("license", ""))
+        scene["mediaSourceUrl"] = str(candidate.get("sourceUrl", ""))
+        scene["_sourceUsed"] = True
+        return selected_path
+    raise RuntimeError(
+        "Live-footage gate stopped the upload: a verified scene video could not be downloaded."
+    )
 
 
 def gradient_canvas(width: int, height: int, seed: int) -> Image.Image:
@@ -1154,6 +1500,74 @@ def build_slide(
     return output
 
 
+def build_live_overlay(
+    scene: dict[str, Any],
+    index: int,
+    total: int,
+    dimensions: tuple[int, int],
+    work: Path,
+) -> Path:
+    width, height = dimensions
+    overlay = cinematic_overlay(dimensions)
+    draw = ImageDraw.Draw(overlay)
+    margin = max(36, round(width * 0.055))
+    accent = (95, 229, 255, 255)
+    headline_size = max(30, round(width * (0.038 if width > height else 0.052)))
+    headline_font = font(headline_size, bold=True)
+    small_font = font(max(16, round(width * 0.020)))
+    brand_font = font(max(17, round(width * 0.021)), bold=True)
+    lines = wrapped_lines(
+        draw,
+        str(scene["onScreenText"]),
+        headline_font,
+        width - margin * 2,
+    )[:2]
+    line_height = round(headline_size * 1.12)
+    top = margin + max(58, round(height * 0.05))
+    block_height = max(line_height, len(lines) * line_height)
+    draw.rounded_rectangle(
+        (margin - 16, top - 14, width - margin + 16, top + block_height + 15),
+        radius=max(16, width // 44),
+        fill=(2, 9, 20, 142),
+        outline=(95, 229, 255, 74),
+        width=2,
+    )
+    for line_index, line in enumerate(lines):
+        draw.text(
+            (margin, top + line_index * line_height),
+            line,
+            font=headline_font,
+            fill=(255, 255, 255, 255),
+            stroke_width=max(1, width // 520),
+            stroke_fill=(0, 0, 0, 230),
+        )
+
+    draw.text((margin, margin), "FACTFORGE AI", font=brand_font, fill=accent)
+    counter = f"{index + 1:02d} / {total:02d}"
+    counter_width = draw.textbbox((0, 0), counter, font=small_font)[2]
+    draw.text(
+        (width - margin - counter_width, margin),
+        counter,
+        font=small_font,
+        fill=(208, 222, 238, 255),
+    )
+    line_y = margin + max(30, round(width * 0.036))
+    draw.rounded_rectangle(
+        (margin, line_y, width - margin, line_y + 4),
+        radius=2,
+        fill=(82, 108, 130, 210),
+    )
+    progress_x = margin + round((width - margin * 2) * ((index + 1) / total))
+    draw.rounded_rectangle(
+        (margin, line_y, progress_x, line_y + 4),
+        radius=2,
+        fill=accent,
+    )
+    output = work / f"overlay-{index:02d}.png"
+    overlay.save(output, format="PNG", optimize=True)
+    return output
+
+
 def wav_seconds(path: Path) -> float:
     with wave.open(str(path), "rb") as audio:
         return audio.getnframes() / float(audio.getframerate())
@@ -1212,18 +1626,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     timeline = 0.0
     for scene_index, scene in enumerate(pack["scenes"]):
         duration = float(scene["durationSeconds"])
+        speech_duration = min(
+            duration,
+            max(0.6, float(scene.get("_speechDuration", duration))),
+        )
         chunks = caption_chunks(str(scene["narration"]))
         caption_style = "Caption"
         if video_format == "short":
             caption_style = "CaptionLeft"
-        available = max(0.5, duration - 0.32)
+        available = max(0.5, speech_duration - 0.26)
         total_words = max(1, sum(len(chunk.split()) for chunk in chunks))
         position = timeline + 0.12
         for chunk_index, chunk in enumerate(chunks):
             share = available * len(chunk.split()) / total_words
             end = position + share
             if chunk_index == len(chunks) - 1:
-                end = timeline + duration - 0.12
+                end = timeline + speech_duration - 0.08
             clean = re.sub(r"\s+", " ", chunk).strip()
             clean = clean.replace("{", "(").replace("}", ")")
             entries.append(
@@ -1407,6 +1825,64 @@ def verify_host_motion(video: Path, work: Path) -> None:
     print(f"Presenter motion gate passed with face score {motion_score:.3f}.")
 
 
+def verify_scene_motion(video: Path, work: Path, scene_index: int) -> None:
+    duration = media_seconds(video)
+    moments = (
+        min(0.55, duration * 0.12),
+        min(max(1.0, duration * 0.42), max(1.0, duration - 0.8)),
+        min(max(1.4, duration * 0.78), max(1.4, duration - 0.25)),
+    )
+    frames: list[Path] = []
+    for frame_index, moment in enumerate(moments):
+        frame = work / f"scene-motion-{scene_index:02d}-{frame_index}.png"
+        run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                f"{moment:.3f}",
+                "-i",
+                str(video),
+                "-frames:v",
+                "1",
+                str(frame),
+            ],
+            timeout=90,
+        )
+        frames.append(frame)
+    scores: list[float] = []
+    with Image.open(frames[0]) as first_raw:
+        first_frame = first_raw.convert("RGB")
+        width, height = first_frame.size
+        action_box = (
+            round(width * 0.08),
+            round(height * 0.26),
+            round(width * 0.92),
+            round(height * 0.78),
+        )
+        first = first_frame.crop(action_box).resize((240, 240))
+        for frame in frames[1:]:
+            with Image.open(frame) as other_raw:
+                other_frame = other_raw.convert("RGB").resize(first_frame.size)
+                other = other_frame.crop(action_box).resize((240, 240))
+                difference = ImageChops.difference(first, other)
+                scores.append(sum(ImageStat.Stat(difference).mean) / 3.0)
+    motion_score = max(scores, default=0.0)
+    if motion_score < 0.45:
+        raise RuntimeError(
+            "Live-footage motion gate stopped the upload: "
+            f"scene {scene_index + 1} was effectively static "
+            f"(score {motion_score:.3f})."
+        )
+    print(
+        f"Live-footage motion gate passed for scene {scene_index + 1} "
+        f"with score {motion_score:.3f}."
+    )
+
+
 def procedural_host_animation(audio: Path, source: Path, output: Path) -> None:
     """Fast local-only stand-in used to test the compositing pipeline."""
 
@@ -1515,40 +1991,28 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
     width, height = dimensions
     if not HOST_SHEET.exists():
         raise RuntimeError("The consistent FactForge host asset was missing.")
-    used_sources: set[str] = set()
-    slides: list[Path] = []
-    for index, scene in enumerate(pack["scenes"]):
-        slides.append(
-            build_slide(
-                scene,
-                str(pack["title"]),
-                index,
-                len(pack["scenes"]),
-                dimensions,
-                work,
-                used_sources,
-            )
-        )
-    sourced_scenes = sum(bool(scene.get("_sourceUsed")) for scene in pack["scenes"])
-    required_scenes = max(1, (len(pack["scenes"]) * 2 + 2) // 3)
-    if sourced_scenes < required_scenes:
+    if video_format != "short":
         raise RuntimeError(
-            "Visual quality gate stopped the upload: only "
-            f"{sourced_scenes} of {len(pack['scenes'])} scenes received real imagery; "
-            f"at least {required_scenes} are required."
+            "Live-footage gate stopped this long-form upload: only the inspected "
+            "Shorts timelines are enabled while Autopilot is paused for quality review."
         )
-    print(
-        f"Visual quality gate passed with {sourced_scenes} of "
-        f"{len(pack['scenes'])} sourced scenes."
-    )
-
+    video_cache: dict[str, Path] = {}
     scene_files: list[Path] = []
-    for index, (scene, slide) in enumerate(zip(pack["scenes"], slides, strict=True)):
+    for index, scene in enumerate(pack["scenes"]):
+        source_video = acquire_scene_video(scene, work, video_cache)
+        overlay = build_live_overlay(
+            scene,
+            index,
+            len(pack["scenes"]),
+            dimensions,
+            work,
+        )
         audio = work / f"voice-{index:02d}.wav"
         synthesize_scene(str(scene["narration"]), audio)
         target = int(scene["durationSeconds"])
         audio_length = wav_seconds(audio)
         tempo = max(1.0, audio_length / max(1.0, target - 0.25))
+        scene["_speechDuration"] = min(target - 0.08, audio_length / tempo)
         fade_out = max(0.0, target - 0.28)
         audio_filter = (
             f"{atempo_chain(tempo)},"
@@ -1557,25 +2021,15 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
             f"afade=t=in:st=0:d=0.16,afade=t=out:st={fade_out:.2f}:d=0.28"
         )
         scene_file = work / f"scene-{index:02d}.mp4"
-        frame_count = max(1, target * 30 - 1)
-        travel = f"min(1,on/{frame_count})"
-        x_motion = (
-            f"(iw-iw/zoom)*(1-{travel})"
-            if index % 2
-            else f"(iw-iw/zoom)*{travel}"
-        )
-        y_motion = (
-            f"(ih-ih/zoom)*{travel}"
-            if index % 3 == 1
-            else "ih/2-(ih/zoom/2)"
-        )
-        video_filter = (
-            "zoompan=z='min(zoom+0.00028,1.065)':"
-            f"x='{x_motion}':y='{y_motion}':"
-            f"d=1:s={width}x{height}:fps=30,"
-            "fade=t=in:st=0:d=0.28:color=black,"
-            f"fade=t=out:st={max(0.0, target - 0.34):.2f}:d=0.34:color=black,"
-            "format=yuv420p"
+        clip_start = max(0.0, float(scene.get("_clipStartSeconds", 0.0)))
+        filter_complex = (
+            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},setsar=1,fps=30[background];"
+            "[1:v]format=rgba[overlay];"
+            "[background][overlay]overlay=0:0:format=auto,"
+            "fade=t=in:st=0:d=0.22:color=black,"
+            f"fade=t=out:st={max(0.0, target - 0.28):.2f}:d=0.28:color=black,"
+            "format=yuv420p[video]"
         )
         run(
             [
@@ -1584,20 +2038,26 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
                 "-loglevel",
                 "error",
                 "-y",
+                "-stream_loop",
+                "-1",
+                "-ss",
+                f"{clip_start:.3f}",
+                "-i",
+                str(source_video),
                 "-loop",
                 "1",
                 "-framerate",
                 "30",
                 "-i",
-                str(slide),
+                str(overlay),
                 "-i",
                 str(audio),
+                "-filter_complex",
+                filter_complex,
                 "-map",
-                "0:v:0",
+                "[video]",
                 "-map",
-                "1:a:0",
-                "-vf",
-                video_filter,
+                "2:a:0",
                 "-af",
                 audio_filter,
                 "-t",
@@ -1618,9 +2078,16 @@ def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
                 "+faststart",
                 str(scene_file),
             ],
-            timeout=300,
+            timeout=420,
         )
+        verify_scene_motion(scene_file, work, index)
         scene_files.append(scene_file)
+
+    if len(scene_files) != len(pack["scenes"]):
+        raise RuntimeError(
+            "Live-footage gate stopped the upload: every scene must use moving video."
+        )
+    print(f"Live-footage gate passed for all {len(scene_files)} scenes.")
 
     concat = work / "scenes.txt"
     concat.write_text(
@@ -1725,8 +2192,15 @@ def remove_internal_scene_fields(pack: dict[str, Any]) -> None:
     for scene in pack.get("scenes", []):
         if not isinstance(scene, dict):
             continue
-        scene.pop("_imageCandidates", None)
-        scene.pop("_sourceUsed", None)
+        for key in (
+            "_clipStartSeconds",
+            "_imageCandidates",
+            "_mediaMatch",
+            "_sourceUsed",
+            "_speechDuration",
+            "_videoCandidates",
+        ):
+            scene.pop(key, None)
 
 
 def upload_video(job_id: str, path: Path) -> None:
@@ -1785,11 +2259,11 @@ def main() -> int:
 
         if action == "create":
             pack = generate_content_pack(job)
-            attach_rights_safe_images(pack)
         elif action == "render" and isinstance(job.get("pack"), dict):
             pack = job["pack"]
         else:
             raise RuntimeError("FactForge returned an unsupported runner action.")
+        attach_rights_safe_videos(pack)
 
         with tempfile.TemporaryDirectory(prefix="factforge-") as temporary:
             mp4 = render_video(pack, str(job["format"]), Path(temporary))
