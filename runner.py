@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from pathlib import Path
 from typing import Any
@@ -2244,6 +2245,36 @@ def upload_video(job_id: str, path: Path) -> None:
         )
 
 
+def store_metadata(job_id: str, pack: dict[str, Any]) -> None:
+    """Persist a replay-safe public content pack before the expensive render."""
+    public_pack = json.loads(json.dumps(pack))
+    remove_internal_scene_fields(public_pack)
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            factforge_request(
+                "POST",
+                f"/api/free-runner/jobs/{job_id}/metadata",
+                payload={"pack": public_pack},
+                timeout=300,
+            )
+            return
+        except FactForgeError as error:
+            if error.status < 500:
+                raise
+            last_error = error
+        except requests.RequestException as error:
+            last_error = error
+        if attempt < 2:
+            print(
+                f"Metadata save attempt {attempt + 1} timed out; retrying safely."
+            )
+            time.sleep(2 * (attempt + 1))
+    if last_error:
+        raise last_error
+    raise RuntimeError("FactForge did not accept the content metadata.")
+
+
 def report_failure(job_id: str, error: Exception) -> None:
     message = re.sub(r"[\r\n\t]+", " ", str(error)).strip()[:600]
     try:
@@ -2286,16 +2317,11 @@ def main() -> int:
             raise RuntimeError("FactForge returned an unsupported runner action.")
         attach_rights_safe_videos(pack)
 
+        if action == "create":
+            store_metadata(job_id, pack)
+
         with tempfile.TemporaryDirectory(prefix="factforge-") as temporary:
             mp4 = render_video(pack, str(job["format"]), Path(temporary))
-            if action == "create":
-                remove_internal_scene_fields(pack)
-                factforge_request(
-                    "POST",
-                    f"/api/free-runner/jobs/{job_id}/metadata",
-                    payload={"pack": pack},
-                    timeout=120,
-                )
             upload_video(job_id, mp4)
         factforge_request(
             "POST", f"/api/free-runner/jobs/{job_id}/publish", timeout=900
