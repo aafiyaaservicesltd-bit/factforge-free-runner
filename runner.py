@@ -84,6 +84,12 @@ VIDEO_PROFILES: list[dict[str, Any]] = [
             "women",
         ),
         "query": "Thai Basil Squid Stir Fry with Fried Egg Bangkok Street Food 2016",
+        "sourceUrls": (
+            "https://hot-thai-kitchen.com/pad-kra-pao-beef/",
+            "https://www.foodandwine.com/pad-krapow-basil-stir-fry-7485308",
+            "https://www.streetsmartkitchen.com/authentic-thai-squid-recipe/",
+            "https://thewoksoflife.com/pad-kra-pao/",
+        ),
         "requiredTitleTerms": ("thai basil", "squid", "stir fry"),
         "clipStarts": (5.0, 25.0, 90.0, 120.0, 148.0, 180.0),
         "visuals": (
@@ -455,17 +461,32 @@ def profile_visual_plan(profile: dict[str, Any], count: int) -> list[str]:
 
 def discover_sources(job_id: str, focus: str) -> tuple[str, str, list[dict[str, str]]]:
     seed = int(hashlib.sha256(f"{job_id}:{RUN_ID}".encode()).hexdigest()[:12], 16)
-    selected_topic = str(video_profile_for_focus(focus)["topic"])
+    selected_profile = video_profile_for_focus(focus)
+    selected_topic = str(selected_profile["topic"])
+    topic_locked = focus.strip().lower() == selected_topic.lower()
     remaining_topics = [topic for topic in TOPICS if topic != selected_topic]
     random.Random(seed).shuffle(remaining_topics)
-    ordered_topics = [selected_topic, *remaining_topics]
+    ordered_topics = [selected_topic] if topic_locked else [selected_topic, *remaining_topics]
 
     last_error = "No topic passed the source gate."
     for topic in ordered_topics[:12]:
         if PROHIBITED.search(topic):
             continue
         try:
-            intro, links = wikipedia_candidates(topic)
+            profile = video_profile_for_topic(topic)
+            curated_links = list(profile.get("sourceUrls", ())) if profile else []
+            try:
+                intro, discovered_links = wikipedia_candidates(topic)
+            except Exception:
+                if not curated_links:
+                    raise
+                intro = (
+                    "This story follows the visible cooking sequence in the inspected "
+                    "street-food footage and uses the sources below for ingredient and "
+                    "technique context."
+                )
+                discovered_links = []
+            links = [*curated_links, *discovered_links]
             sources: list[dict[str, str]] = []
             seen_hosts: set[str] = set()
             for link in links[:36]:
