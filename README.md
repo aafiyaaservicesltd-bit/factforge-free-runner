@@ -4,14 +4,19 @@ This public GitHub Actions repository runs FactForge production without a paid
 text-generation, speech, or video-rendering API. It uses a local Qwen model,
 Piper text-to-speech, original procedural artwork, and FFmpeg.
 
-The default series is an original motion comic starring Mali, a fictional Thai
-woman in her mid-twenties. Her long dark hair, teal apron, gold jasmine pin, and
-warm practical personality remain consistent in every episode. Each story uses
-animated comic frames, facial and arm poses, moving props, action lines, camera
-pans, scene-matched narration, and timed captions. No real person's likeness or
-existing franchise character is used.
+The default series is an original animated lifestyle show starring Mali, a
+fictional adult Indian woman with a consistent photoreal character design. Her
+face, long dark hair, red bindi, gold jasmine pin, teal-and-cream palette, and
+warm practical personality remain consistent in every episode. Her Western
+clothes change naturally by activity: an apron only for cooking, activewear for
+yoga, and a safety life jacket for boating and fishing. Stories rotate through
+cooking, yoga, walks, city errands, bus rides, boating, and fishing.
 
-The factual cooking and cultural details still pass the two-source evidence gate.
+Each story uses activity-specific poses, moving environments, subtle breathing
+and body sway, prop motion, camera pans, scene-matched narration, and timed
+captions. No real person's likeness or existing franchise character is used.
+
+The factual cooking details still pass the two-source evidence gate.
 The story itself is clearly disclosed as original fiction. Before upload, a motion
 gate samples every scene and stops the job if the rendered comic is effectively
 static. Removing the old heavy presenter model also makes scheduled runs much

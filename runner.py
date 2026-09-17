@@ -44,6 +44,22 @@ PRESENTER_SEGMENT_SECONDS = max(
 )
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "local")
 HOST_SHEET = Path(__file__).resolve().parent / "assets" / "factforge-host.webp"
+MALI_REALISTIC_ASSETS = {
+    role: Path(__file__).resolve().parent
+    / "assets"
+    / f"mali-indian-photoreal-{role}-v1.webp"
+    for role in (
+        "neutral",
+        "cooking",
+        "serving",
+        "yoga",
+        "walking",
+        "seated",
+        "boat",
+        "fishing",
+    )
+}
+MALI_REALISTIC_CACHE: dict[str, Image.Image] = {}
 USER_AGENT = (
     "FactForgeFreeRunner/1.0 "
     "(+https://github.com/aafiyaaservicesltd-bit/factforge-free-runner)"
@@ -61,8 +77,8 @@ VIDEO_PROFILES: list[dict[str, Any]] = [
         "id": "mali-motion-comic",
         "kind": "comic",
         "topic": (
-            "Mali's original Thai kitchen motion-comic adventures about "
-            "basil, cooking, and everyday problem-solving"
+            "Mali's original motion-comic lifestyle adventures about basil "
+            "cooking and everyday activities"
         ),
         "focusTerms": (
             "comic",
@@ -70,6 +86,12 @@ VIDEO_PROFILES: list[dict[str, Any]] = [
             "mali",
             "original character",
             "animated story",
+            "lifestyle",
+            "yoga",
+            "walking",
+            "boating",
+            "fishing",
+            "bus",
             "interesting facts",
         ),
         "sourceUrls": (
@@ -79,28 +101,36 @@ VIDEO_PROFILES: list[dict[str, Any]] = [
         ),
         "visualVariants": (
             (
-                "Mali, an adult Thai comic heroine with long dark hair and a teal apron, opens her Bangkok kitchen at sunrise",
-                "Mali discovers that the basket of fresh holy basil is missing beside the waiting wok",
-                "Mali follows a trail of basil leaves through the kitchen and studies the shelves for clues",
-                "Mali finds the fallen basil basket beneath a market cart and carefully pulls it free",
-                "Mali returns to the hot wok and stir-fries the rescued basil with a joyful sweep",
-                "Mali serves the finished basil dish and smiles as the kitchen glows at sunset",
+                "Mali, an adult Indian lifestyle host in a teal Western blouse and cream trousers, enters her bright apartment kitchen without an apron at sunrise",
+                "Mali ties on a cream apron and arranges fresh basil, vegetables, and spices on the prep counter",
+                "Mali checks the pantry shelves and rinses the ingredients before cooking",
+                "Mali stirs the vegetables and basil in a hot wok as steam curls upward",
+                "Mali finishes the colorful dish and checks the final seasoning at the stove",
+                "Mali keeps her cream apron on while serving the finished meal with a warm smile",
             ),
             (
-                "Mali, an adult Thai comic heroine with long dark hair and a teal apron, accepts a busy lunch challenge in her Bangkok kitchen",
-                "Mali lays out holy basil, chilli, garlic, and a waiting wok before the first order",
-                "Mali spots one wilted bunch and selects the freshest basil leaves for the dish",
-                "Mali sends the ingredients through the hot wok as bold comic motion lines fill the kitchen",
-                "Mali folds in the basil at the final moment while steam curls above the wok",
-                "Mali presents the finished lunch and marks the kitchen challenge complete",
+                "Mali, an adult Indian lifestyle host in modern teal activewear, begins morning yoga in a green city park",
+                "Mali finishes her stretch, changes into her teal Western blouse and cream trousers, and starts a riverside walk",
+                "Mali walks through a lively city street as traffic and shop windows move behind her",
+                "Mali waits at a city bus stop and raises one hand as the bus arrives",
+                "Mali sits by the bus window while the city slides past outside",
+                "Mali steps off the bus and finishes her day with a relaxed sunset walk through the park",
             ),
             (
-                "Mali, an adult Thai comic heroine with long dark hair and a teal apron, receives a basil delivery at her Bangkok doorway",
-                "Mali compares the fragrant leaves with the ingredients arranged beside her wok",
-                "Mali washes and sorts the basil while comic panels reveal each careful kitchen step",
-                "Mali crushes garlic and chilli as the wok begins to glow with heat",
-                "Mali adds the basil near the finish and tosses everything together in the wok",
-                "Mali shares the completed dish and files the recipe in her comic kitchen journal",
+                "Mali, an adult Indian lifestyle host in a teal Western blouse and cream trousers, walks toward the waterfront on a clear morning",
+                "Mali puts on an orange safety life jacket and sits securely as a small boat leaves the dock",
+                "Mali enjoys the moving shoreline from her seat while the boat crosses calm water",
+                "Mali stands safely in her life jacket and casts a fishing line from the boat",
+                "Mali reels in the line carefully and smiles at a successful afternoon of fishing",
+                "Mali sits in her life jacket as the boat returns to the glowing waterfront at sunset",
+            ),
+            (
+                "Mali, an adult Indian lifestyle host in a teal Western blouse and cream trousers, leaves her city apartment for a day of errands",
+                "Mali walks across a busy city crosswalk while storefronts and traffic pass behind her",
+                "Mali boards a city bus and sits by the window with her shopping bag beside her",
+                "Mali leaves the bus near a riverside park and follows the walking path",
+                "Mali changes into modern teal activewear and practices a calm yoga pose on the grass",
+                "Mali changes back into her Western outfit and walks home beneath the evening city lights",
             ),
         ),
         "factClaims": (
@@ -777,8 +807,8 @@ def normalize_content_pack(
         "tags": clean_tags,
         "disclosure": (
             (
-                "This is an original fictional motion comic starring an adult "
-                "AI-designed character. Cultural and cooking details were checked "
+                "This is an original fictional animated lifestyle story starring "
+                "an adult AI-designed character. Cooking details were checked "
                 "against the listed sources, and narration uses a synthetic voice."
             )
             if profile.get("kind") == "comic"
@@ -828,15 +858,20 @@ def generate_content_pack(job: dict[str, Any]) -> dict[str, Any]:
     comic_mode = video_profile.get("kind") == "comic"
     creative_direction = (
         """
-Write an ORIGINAL motion-comic episode starring Mali, a fictional Thai woman in
-her mid-twenties. Mali has long dark hair, a teal apron, a gold jasmine pin, a warm
-personality, and practical intelligence. Keep this exact adult character identity
-in every scene. Create a small kitchen mystery or challenge with a clear beginning,
-turn, and satisfying payoff. The prose should sound warm and natural when spoken by
-a female narrator, with simple conversational English and respectful Thai context.
-The comic panels are already planned below, so every sentence must describe the
-matching action. Never imitate, name, or resemble any existing franchise, celebrity,
-real person, superhero, or copyrighted character.
+Write an ORIGINAL animated lifestyle episode starring Mali, a fictional adult
+Indian woman aged 28. Mali has warm medium-brown skin, long dark wavy hair, a small
+red bindi, a gold jasmine hair pin, a beautiful photorealistic appearance, a warm
+personality, and practical intelligence. Her regular Western outfit is a teal blouse,
+cream tailored trousers, and white sneakers. She wears a cream apron ONLY while
+actively cooking or serving, teal athletic clothing for yoga, and a fitted safety
+life jacket during boating or fishing. Keep this exact adult character identity,
+face, and wardrobe logic in every scene. Build a small everyday adventure with a
+clear beginning, turn, and satisfying payoff around the fixed panels below: cooking,
+yoga, walking, city travel, bus rides, boating, or fishing. The prose should sound
+warm and natural when spoken by a female narrator in simple conversational English.
+Every sentence must describe the matching visible action. Never imitate, name, or
+resemble any existing franchise, celebrity, real person, superhero, or copyrighted
+character.
 """
         if comic_mode
         else """
@@ -2193,6 +2228,67 @@ def draw_comic_leaf(
     draw.line((x - size + 3, y, x + size - 3, y), fill=outline, width=2)
 
 
+def draw_realistic_mali_character(
+    canvas: Image.Image,
+    *,
+    center_x: int,
+    foot_y: int,
+    scale: float,
+    frame_index: int,
+    pose: int,
+    setting: str = "",
+) -> bool:
+    """Composite the stable photoreal Mali model with natural micro-motion."""
+
+    asset_key = {
+        "prep": "cooking",
+        "wok": "cooking",
+        "serving": "serving",
+        "yoga": "yoga",
+        "park": "walking",
+        "city": "walking",
+        "bus": "seated",
+        "boat": "boat",
+        "fishing": "fishing",
+    }.get(setting, "neutral")
+    asset_path = MALI_REALISTIC_ASSETS[asset_key]
+    if not asset_path.exists():
+        return False
+    source = MALI_REALISTIC_CACHE.get(asset_key)
+    if source is None:
+        with Image.open(asset_path) as raw:
+            loaded = raw.convert("RGBA")
+        alpha = loaded.getchannel("A")
+        visible = alpha.point(lambda value: 255 if value > 12 else 0)
+        bounds = visible.getbbox()
+        source = loaded.crop(bounds) if bounds else loaded
+        MALI_REALISTIC_CACHE[asset_key] = source
+
+    # Slow breathing, weight shift, and camera-relative drift keep the host alive
+    # without warping her face or turning her into a floating sticker.
+    breath = math.sin(frame_index * math.pi / 4)
+    weight_shift = math.sin((frame_index + pose * 1.7) * math.pi / 5)
+    pulse = 1.0 + 0.008 * breath
+    target_height = max(420, round(980 * scale * pulse))
+    target_width = max(1, round(source.width * target_height / source.height))
+    character = source.resize(
+        (target_width, target_height), Image.Resampling.LANCZOS
+    )
+    sway = 0.55 * weight_shift
+    character = character.rotate(
+        sway,
+        resample=Image.Resampling.BICUBIC,
+        expand=True,
+        fillcolor=(0, 0, 0, 0),
+    )
+    bob = round(breath * max(3, 5 * scale))
+    drift = round(weight_shift * max(3, 7 * scale))
+    x = center_x - character.width // 2 + drift
+    y = foot_y - character.height + bob
+    canvas.paste(character, (x, y), character)
+    return True
+
+
 def draw_mali_character(
     canvas: Image.Image,
     *,
@@ -2201,8 +2297,20 @@ def draw_mali_character(
     scale: float,
     frame_index: int,
     pose: int,
+    setting: str = "",
 ) -> None:
     """Draw the recurring fictional adult heroine with a stable visual model."""
+
+    if draw_realistic_mali_character(
+        canvas,
+        center_x=center_x,
+        foot_y=foot_y,
+        scale=scale,
+        frame_index=frame_index,
+        pose=pose,
+        setting=setting,
+    ):
+        return
 
     draw = ImageDraw.Draw(canvas)
     ink = (21, 22, 31)
@@ -2500,6 +2608,52 @@ def comic_scene_setting(scene: dict[str, Any], scene_index: int) -> str:
         for key in ("visualPrompt", "onScreenText", "narration")
     ).lower()
     rules = (
+        (
+            "fishing",
+            (
+                "fishing",
+                "fishing line",
+                "fishing rod",
+                "casts",
+                "cast a",
+                "reels in",
+                "reel in",
+            ),
+        ),
+        (
+            "boat",
+            (
+                "boat",
+                "boating",
+                "waterfront",
+                "shoreline",
+                "leaves the dock",
+                "returns to the dock",
+            ),
+        ),
+        ("bus", ("bus", "bus stop", "transit", "boards a city")),
+        ("yoga", ("yoga", "tree pose", "stretch", "activewear")),
+        (
+            "city",
+            (
+                "city street",
+                "city crosswalk",
+                "crosswalk",
+                "storefront",
+                "traffic",
+                "city lights",
+            ),
+        ),
+        (
+            "park",
+            (
+                "park",
+                "riverside walk",
+                "walking path",
+                "sunset walk",
+                "walks home",
+            ),
+        ),
         ("serving", ("serve", "serves", "finished", "presents", "shares", "sunset", "journal", "complete")),
         ("wok", ("wok", "stir-f", "flame", "toss", "folds in", "cooking", "heat")),
         ("entrance", ("doorway", "opens her", "sunrise", "delivery", "receives")),
@@ -2510,7 +2664,7 @@ def comic_scene_setting(scene: dict[str, Any], scene_index: int) -> str:
     for setting, terms in rules:
         if any(term in text for term in terms):
             return setting
-    return ("entrance", "prep", "pantry", "market", "wok", "serving")[
+    return ("entrance", "prep", "park", "city", "wok", "serving")[
         scene_index % 6
     ]
 
@@ -2533,7 +2687,172 @@ def draw_comic_environment(
     setting = comic_scene_setting(scene, scene_index)
     detail_variant = scene_index % 4
 
-    if setting == "entrance":
+    if setting == "yoga":
+        # Open green park at sunrise with a gently moving canopy and yoga mat.
+        horizon = top + round(height * 0.52)
+        draw.rectangle((left, top, right, horizon), fill=(142, 211, 229))
+        draw.rectangle((left, horizon, right, bottom), fill=(91, 170, 92))
+        sun_x = left + round(width * 0.22) + movement
+        sun_y = top + round(height * 0.18)
+        sun_r = max(28, round(width * 0.055))
+        draw.ellipse(
+            (sun_x - sun_r, sun_y - sun_r, sun_x + sun_r, sun_y + sun_r),
+            fill=(255, 232, 132),
+            outline=(178, 116, 62),
+            width=5,
+        )
+        for cloud in range(3):
+            cloud_x = left + ((cloud * round(width * 0.36) + frame_index * 7) % (width + 180)) - 90
+            cloud_y = top + 52 + cloud * 48
+            draw.ellipse((cloud_x, cloud_y, cloud_x + 150, cloud_y + 48), fill=(241, 249, 247))
+            draw.ellipse((cloud_x + 44, cloud_y - 20, cloud_x + 112, cloud_y + 52), fill=(241, 249, 247))
+        for tree in range(5):
+            tree_x = left + 38 + tree * round((width - 76) / 4)
+            trunk_top = horizon - 95 - (tree % 2) * 38
+            draw.rectangle((tree_x - 12, trunk_top, tree_x + 12, bottom), fill=(112, 73, 48))
+            canopy_x = tree_x + (movement // 2 if tree % 2 else -movement // 2)
+            draw.ellipse((canopy_x - 72, trunk_top - 84, canopy_x + 72, trunk_top + 34), fill=(53, 137, 76), outline=ink, width=4)
+        mat_left = left + round(width * 0.10)
+        mat_y = bottom - round(height * 0.16)
+        draw.polygon(
+            (
+                (mat_left, mat_y),
+                (mat_left + round(width * 0.42), mat_y - 18),
+                (mat_left + round(width * 0.50), bottom - 22),
+                (mat_left + 45, bottom - 10),
+            ),
+            fill=(19, 130, 140),
+            outline=ink,
+        )
+
+    elif setting == "park":
+        # Riverside walking path with moving clouds, water and foreground leaves.
+        sky_end = top + round(height * 0.42)
+        river_end = top + round(height * 0.68)
+        draw.rectangle((left, top, right, sky_end), fill=(128, 207, 230))
+        draw.rectangle((left, sky_end, right, river_end), fill=(61, 158, 181))
+        draw.rectangle((left, river_end, right, bottom), fill=(205, 179, 126))
+        for wave in range(9):
+            wave_y = sky_end + 18 + wave * max(16, (river_end - sky_end) // 9)
+            wave_offset = (frame_index * 12 + wave * 37) % 90
+            for wave_x in range(left - 90 + wave_offset, right, 90):
+                draw.arc((wave_x, wave_y, wave_x + 62, wave_y + 18), 190, 350, fill=(191, 235, 235), width=3)
+        path_left = left + round(width * 0.12)
+        draw.polygon(
+            ((path_left, bottom), (left + round(width * 0.52), river_end), (right, river_end), (right, bottom)),
+            fill=(222, 202, 162),
+            outline=ink,
+        )
+        for tree in range(4):
+            tree_x = left + 45 + tree * round(width * 0.23)
+            tree_y = river_end - 42 - (tree % 2) * 26
+            draw.rectangle((tree_x - 10, tree_y, tree_x + 10, bottom), fill=(108, 73, 49))
+            draw.ellipse((tree_x - 58 + movement // 3, tree_y - 62, tree_x + 62 + movement // 3, tree_y + 34), fill=(49, 141, 78), outline=ink, width=4)
+        bench_x = left + round(width * 0.18) - movement
+        bench_y = bottom - 138
+        draw.rectangle((bench_x, bench_y, bench_x + 190, bench_y + 32), fill=(148, 88, 54), outline=ink, width=5)
+        draw.line((bench_x + 25, bench_y + 28, bench_x + 12, bottom - 25), fill=ink, width=8)
+        draw.line((bench_x + 165, bench_y + 28, bench_x + 180, bottom - 25), fill=ink, width=8)
+
+    elif setting == "city":
+        # A clearly urban street with parallax buildings, crosswalk and traffic.
+        skyline_y = top + round(height * 0.58)
+        draw.rectangle((left, top, right, skyline_y), fill=(128, 194, 218))
+        for building in range(7):
+            building_width = round(width * (0.15 + (building % 3) * 0.025))
+            building_x = left + building * round(width * 0.15) - round(width * 0.08)
+            building_top = top + 70 + (building % 4) * 58
+            color = ((81, 112, 139), (195, 119, 92), (77, 145, 142))[building % 3]
+            draw.rectangle((building_x, building_top, building_x + building_width, skyline_y), fill=color, outline=ink, width=5)
+            for row in range(3):
+                for col in range(2):
+                    wx = building_x + 18 + col * max(34, building_width // 2)
+                    wy = building_top + 24 + row * 58
+                    draw.rectangle((wx, wy, wx + 24, wy + 31), fill=(242, 220, 142), outline=ink, width=2)
+        road_top = skyline_y
+        draw.rectangle((left, road_top, right, bottom), fill=(67, 71, 79))
+        for stripe in range(7):
+            stripe_x = left - 100 + stripe * round((width + 200) / 6) + movement
+            draw.polygon(((stripe_x, bottom), (stripe_x + 62, bottom), (stripe_x + 20, road_top), (stripe_x - 14, road_top)), fill=(235, 232, 213))
+        car_x = left + ((frame_index * 38 + scene_index * 97) % max(1, width + 300)) - 190
+        car_y = road_top + round(height * 0.18)
+        draw.rounded_rectangle((car_x, car_y, car_x + 220, car_y + 82), radius=22, fill=(227, 76, 71), outline=ink, width=6)
+        draw.polygon(((car_x + 42, car_y), (car_x + 92, car_y - 52), (car_x + 170, car_y - 52), (car_x + 202, car_y)), fill=(99, 176, 201), outline=ink)
+        for wheel_x in (car_x + 48, car_x + 176):
+            draw.ellipse((wheel_x - 24, car_y + 58, wheel_x + 24, car_y + 106), fill=(29, 31, 36), outline=ink, width=4)
+
+    elif setting == "bus":
+        # Bus interior; scenery travels through the windows while seats stay fixed.
+        draw.rectangle(box, fill=(213, 222, 217))
+        window_top = top + 44
+        window_bottom = top + round(height * 0.50)
+        draw.rectangle((left + 24, window_top, right - 24, window_bottom), fill=(126, 201, 225), outline=ink, width=9)
+        outside_shift = (frame_index * 31) % max(1, width // 3)
+        for building in range(7):
+            bx = left - outside_shift + building * round(width * 0.22)
+            by = window_top + 55 + (building % 3) * 35
+            draw.rectangle((bx, by, bx + round(width * 0.16), window_bottom - 8), fill=((87, 128, 152), (209, 126, 93), (77, 151, 139))[building % 3], outline=ink, width=3)
+        rail_y = top + 30
+        draw.line((left + 24, rail_y, right - 24, rail_y), fill=(58, 65, 72), width=12)
+        for strap in range(5):
+            strap_x = left + 90 + strap * round((width - 180) / 4)
+            draw.line((strap_x, rail_y, strap_x, rail_y + 80), fill=(58, 65, 72), width=6)
+            draw.rounded_rectangle((strap_x - 24, rail_y + 72, strap_x + 24, rail_y + 124), radius=14, outline=(58, 65, 72), width=6)
+        seat_y = bottom - round(height * 0.24)
+        draw.rounded_rectangle((left + 34, seat_y, right - 34, bottom + 40), radius=28, fill=(32, 130, 141), outline=ink, width=7)
+        draw.line((left + round(width * 0.55), window_bottom, left + round(width * 0.55), bottom), fill=(69, 77, 83), width=11)
+
+    elif setting == "boat":
+        # Calm moving water and a boat bench/rail for the seated life-jacket pose.
+        horizon = top + round(height * 0.42)
+        draw.rectangle((left, top, right, horizon), fill=(131, 207, 231))
+        draw.rectangle((left, horizon, right, bottom), fill=(48, 143, 178))
+        shore_shift = movement * 2
+        for island in range(4):
+            ix = left - 60 + island * round(width * 0.34) + shore_shift
+            iy = horizon - 35 - (island % 2) * 25
+            draw.ellipse((ix, iy, ix + round(width * 0.30), horizon + 22), fill=(54, 130, 75), outline=ink, width=4)
+        for wave in range(13):
+            wy = horizon + 24 + wave * max(14, (bottom - horizon) // 13)
+            shift = (frame_index * 13 + wave * 41) % 105
+            for wx in range(left - 105 + shift, right, 105):
+                draw.arc((wx, wy, wx + 75, wy + 19), 185, 355, fill=(186, 232, 239), width=4)
+        deck_y = bottom - round(height * 0.22)
+        draw.polygon(((left, deck_y), (right, deck_y - 22), (right, bottom), (left, bottom)), fill=(155, 96, 58), outline=ink)
+        bench_y = deck_y - 32
+        draw.rounded_rectangle((left + 34, bench_y, right - 34, bench_y + 68), radius=14, fill=(225, 178, 100), outline=ink, width=6)
+        rail_y = top + round(height * 0.61)
+        draw.line((left + 12, rail_y, right - 12, rail_y + movement // 3), fill=(222, 229, 225), width=12)
+        for post in range(5):
+            px = left + 20 + post * round((width - 40) / 4)
+            draw.line((px, rail_y, px, deck_y), fill=(222, 229, 225), width=8)
+
+    elif setting == "fishing":
+        # Dock and water respond to the host's fishing action with moving ripples.
+        horizon = top + round(height * 0.45)
+        draw.rectangle((left, top, right, horizon), fill=(145, 210, 229))
+        draw.rectangle((left, horizon, right, bottom), fill=(44, 137, 170))
+        for cloud in range(3):
+            cx = left + ((cloud * round(width * 0.39) + frame_index * 6) % (width + 150)) - 75
+            cy = top + 48 + cloud * 60
+            draw.ellipse((cx, cy, cx + 135, cy + 46), fill=(241, 248, 246))
+        for ripple in range(12):
+            ry = horizon + 22 + ripple * max(16, (bottom - horizon) // 12)
+            shift = (frame_index * 15 + ripple * 29) % 96
+            for rx in range(left - 96 + shift, right, 96):
+                draw.arc((rx, ry, rx + 67, ry + 18), 185, 355, fill=(186, 229, 237), width=4)
+        dock_right = left + round(width * 0.45)
+        dock_top = bottom - round(height * 0.28)
+        draw.polygon(((left, dock_top), (dock_right, dock_top - 42), (dock_right, bottom), (left, bottom)), fill=(160, 103, 62), outline=ink)
+        for plank in range(6):
+            py = dock_top + plank * max(24, (bottom - dock_top) // 6)
+            draw.line((left, py, dock_right, py - 42), fill=(96, 58, 42), width=4)
+        bob_x = left + round(width * 0.26) + movement * 2
+        bob_y = horizon + round(height * 0.26) + abs(movement // 2)
+        draw.ellipse((bob_x - 12, bob_y - 18, bob_x + 12, bob_y + 18), fill=(244, 74, 67), outline=ink, width=4)
+        draw.arc((bob_x - 62, bob_y - 24, bob_x + 62, bob_y + 28), 5, 175, fill=(222, 245, 245), width=4)
+
+    elif setting == "entrance":
         # Bangkok kitchen exterior at sunrise: sky, rooftops, awning, door, plants.
         horizon = top + round(height * 0.46)
         sky_top = (255, 181, 108)
@@ -2788,8 +3107,8 @@ def build_motion_comic_frame(
         ),
     )
 
-    # Action lines belong only to energetic market and wok shots. Quieter scenes
-    # use small sparkles so the six sets do not share the same visual silhouette.
+    # Action lines belong only to energetic market and wok shots. Kitchen story
+    # sets keep a light comic sparkle; lifestyle sets rely on their real motion.
     if setting in {"market", "wok"}:
         line_center = (round(width * 0.48), round(height * 0.56))
         for ray in range(10):
@@ -2805,7 +3124,7 @@ def build_motion_comic_frame(
                 fill=(57, 50, 62),
                 width=5,
             )
-    else:
+    elif setting in {"entrance", "prep", "pantry", "serving"}:
         for sparkle in range(6):
             sx = panel_margin + 54 + (sparkle * 97 + scene_index * 31) % max(100, width - panel_margin * 2 - 108)
             sy = action_top + 54 + (sparkle * 113 + frame_index * 7) % max(120, height - action_top - panel_margin - 150)
@@ -2815,11 +3134,22 @@ def build_motion_comic_frame(
 
     draw_mali_character(
         base,
-        center_x=round(width * (0.70 if scene_index % 2 == 0 else 0.73)),
+        center_x=round(
+            width
+            * {
+                "yoga": 0.66,
+                "park": 0.68,
+                "city": 0.69,
+                "bus": 0.70,
+                "boat": 0.69,
+                "fishing": 0.70,
+            }.get(setting, 0.71 if scene_index % 2 == 0 else 0.73)
+        ),
         foot_y=height - panel_margin - 20,
-        scale=0.84 if height > width else 0.64,
+        scale=0.90 if height > width else 0.70,
         frame_index=frame_index,
         pose=beat,
+        setting=setting,
     )
 
     # Speech-card copy is short and always tied to this exact scene.
@@ -2836,7 +3166,9 @@ def build_motion_comic_frame(
         outline=(22, 24, 33, 255),
         width=max(7, width // 92),
     )
-    tail_x = round(width * 0.69)
+    # Keep the pointer on the empty side of the frame so it never masks Mali's
+    # face, hair, or activity props.
+    tail_x = round(width * 0.18)
     bubble_draw.polygon(
         (
             (tail_x - 22, bubble_bottom - 4),
@@ -2850,7 +3182,7 @@ def build_motion_comic_frame(
     draw = ImageDraw.Draw(base)
     label_font = font(max(18, round(width * 0.029)), bold=True)
     title_font = font(max(34, round(width * 0.057)), bold=True)
-    label = "MALI • ORIGINAL MOTION COMIC"
+    label = "MALI • ORIGINAL LIFESTYLE STORY"
     draw.text(
         (bubble_left + 24, bubble_top - 40),
         label,
