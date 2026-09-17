@@ -23,6 +23,7 @@ jobs:
     env:
       FACTFORGE_URL: https://factforge-ai.stony-dove-6282.chatgpt.site
       OLLAMA_MODEL: qwen2.5:3b
+      OLLAMA_MODELS: /tmp/ollama-models
       PIPER_VOICE: en_US-hfc_female-medium
       PIPER_DATA_DIR: /tmp/piper-voices
       PYTHONUNBUFFERED: "1"
@@ -41,7 +42,7 @@ jobs:
       - name: Cache local model
         uses: actions/cache@v4
         with:
-          path: ~/.ollama/models
+          path: ${{ env.OLLAMA_MODELS }}
           key: ollama-qwen25-3b-v1
 
       - name: Install free local tools
