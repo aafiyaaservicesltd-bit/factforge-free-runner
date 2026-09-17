@@ -68,10 +68,15 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "en"})
 Image.MAX_IMAGE_PIXELS = 40_000_000
 
-# Motion-comic episodes use original procedural artwork, so the same adult
-# heroine can remain visually consistent without copying a real person or a
-# copyrighted character. The older documentary profiles remain available for
-# already-queued jobs, but new automatic jobs default to the comic profile.
+REAL_MOTION_REQUIRED_ERROR = (
+    "Real-motion gate stopped the upload: Mali is still a composited still image, "
+    "not a continuously generated human performance. Connect the approved "
+    "image-to-video provider before producing or publishing another Mali episode."
+)
+
+# The legacy motion-comic profile is kept only so old queued work can be
+# identified and rejected with a clear error. A moving background, camera pan,
+# or rotated still must never be treated as real presenter motion.
 VIDEO_PROFILES: list[dict[str, Any]] = [
     {
         "id": "mali-motion-comic",
@@ -1166,22 +1171,7 @@ def attach_rights_safe_videos(pack: dict[str, Any]) -> None:
             "Live-footage gate stopped the upload: this topic has no inspected video plan."
         )
     if profile.get("kind") == "comic":
-        for scene in pack["scenes"]:
-            scene["_mediaMatch"] = str(profile["id"])
-            scene["_renderStyle"] = "original-motion-comic"
-            for key in (
-                "imageUrl",
-                "videoUrl",
-                "mediaCreator",
-                "mediaLicense",
-                "mediaSourceUrl",
-            ):
-                scene.pop(key, None)
-        print(
-            "Original-art gate passed: every scene will use the consistent "
-            "Mali motion-comic character model."
-        )
-        return
+        raise RuntimeError(REAL_MOTION_REQUIRED_ERROR)
     try:
         candidates = commons_videos(str(profile["query"]), 8)
     except Exception as error:
@@ -1198,6 +1188,7 @@ def attach_rights_safe_videos(pack: dict[str, Any]) -> None:
             "Live-footage gate stopped the upload: no license-safe video matched the story."
         )
     primary = matching[0]
+    pack["renderMode"] = "verified-live-footage-v1"
     scenes = pack["scenes"]
     starts = [float(value) for value in profile["clipStarts"]]
     visual_plan = profile_visual_plan(profile, len(scenes))
@@ -3380,7 +3371,10 @@ def render_motion_comic(
 def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
     profile = video_profile_for_topic(str(pack.get("topic", "")))
     if profile and profile.get("kind") == "comic":
-        return render_motion_comic(pack, video_format, work)
+        # Defense in depth: old stored packs can re-enter at the render stage,
+        # so the renderer must reject still-cutout Mali episodes as well as the
+        # media attachment step above.
+        raise RuntimeError(REAL_MOTION_REQUIRED_ERROR)
     dimensions = (720, 1280) if video_format == "short" else (1280, 720)
     width, height = dimensions
     if not HOST_SHEET.exists():
