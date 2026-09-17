@@ -2492,6 +2492,232 @@ def draw_mali_character(
     )
 
 
+def comic_scene_setting(scene: dict[str, Any], scene_index: int) -> str:
+    """Choose a visibly different set that still matches the narrated action."""
+
+    text = " ".join(
+        str(scene.get(key, ""))
+        for key in ("visualPrompt", "onScreenText", "narration")
+    ).lower()
+    rules = (
+        ("serving", ("serve", "serves", "finished", "presents", "shares", "sunset", "journal", "complete")),
+        ("wok", ("wok", "stir-f", "flame", "toss", "folds in", "cooking", "heat")),
+        ("entrance", ("doorway", "opens her", "sunrise", "delivery", "receives")),
+        ("market", ("market cart", "market stall", "cart", "pulls it free")),
+        ("pantry", ("shelf", "shelves", "trail", "clue", "washes", "sorts", "crushes")),
+        ("prep", ("lays out", "arranged", "ingredient", "missing", "basket", "selects", "compares")),
+    )
+    for setting, terms in rules:
+        if any(term in text for term in terms):
+            return setting
+    return ("entrance", "prep", "pantry", "market", "wok", "serving")[
+        scene_index % 6
+    ]
+
+
+def draw_comic_environment(
+    draw: ImageDraw.ImageDraw,
+    scene: dict[str, Any],
+    *,
+    scene_index: int,
+    frame_index: int,
+    box: tuple[int, int, int, int],
+) -> str:
+    """Draw a scene-matched animated set instead of recycling one kitchen."""
+
+    left, top, right, bottom = box
+    width = right - left
+    height = bottom - top
+    ink = (31, 31, 40)
+    movement = round(math.sin(frame_index * math.pi / 4) * max(4, width * 0.008))
+    setting = comic_scene_setting(scene, scene_index)
+    detail_variant = scene_index % 4
+
+    if setting == "entrance":
+        # Bangkok kitchen exterior at sunrise: sky, rooftops, awning, door, plants.
+        horizon = top + round(height * 0.46)
+        sky_top = (255, 181, 108)
+        sky_bottom = (250, 226, 166)
+        for y in range(top, horizon):
+            ratio = (y - top) / max(1, horizon - top)
+            color = tuple(
+                round(a + (b - a) * ratio)
+                for a, b in zip(sky_top, sky_bottom, strict=True)
+            )
+            draw.line((left, y, right, y), fill=color)
+        sun_x = left + round(width * (0.22 + detail_variant * 0.04)) + movement
+        sun_y = top + round(height * 0.22)
+        sun_r = max(34, round(width * 0.075))
+        draw.ellipse(
+            (sun_x - sun_r, sun_y - sun_r, sun_x + sun_r, sun_y + sun_r),
+            fill=(255, 236, 146),
+            outline=(177, 91, 65),
+            width=5,
+        )
+        for building in range(5):
+            bx = left + building * round(width / 4.5) - 25
+            roof_y = horizon - 28 - (building % 2) * 24
+            draw.rectangle((bx, roof_y, bx + round(width * 0.28), bottom), fill=(112, 132, 137), outline=ink, width=4)
+            draw.polygon(
+                ((bx - 10, roof_y), (bx + round(width * 0.14), roof_y - 58), (bx + round(width * 0.29), roof_y)),
+                fill=(173, 72, 55),
+                outline=ink,
+            )
+        shop_left = left + round(width * 0.37)
+        shop_right = right - round(width * 0.05)
+        shop_top = top + round(height * 0.26)
+        draw.rectangle((shop_left, shop_top, shop_right, bottom), fill=(62, 146, 147), outline=ink, width=7)
+        awning_y = shop_top + round(height * 0.13)
+        stripe_width = max(34, round((shop_right - shop_left) / 6))
+        for stripe in range(6):
+            sx = shop_left + stripe * stripe_width
+            draw.polygon(
+                ((sx, awning_y), (min(shop_right, sx + stripe_width), awning_y), (min(shop_right, sx + stripe_width + 10), awning_y + 58 + movement // 3), (sx - 4, awning_y + 58 - movement // 3)),
+                fill=(244, 224, 179) if stripe % 2 == 0 else (218, 78, 70),
+                outline=ink,
+            )
+        door_left = shop_left + round((shop_right - shop_left) * 0.48)
+        draw.rectangle((door_left, awning_y + 58, shop_right - 24, bottom), fill=(43, 87, 94), outline=ink, width=6)
+        draw.ellipse((shop_left + 28, bottom - 105, shop_left + 94, bottom - 39), fill=(49, 151, 87), outline=ink, width=5)
+        draw.rectangle((shop_left + 43, bottom - 44, shop_left + 80, bottom), fill=(165, 91, 53), outline=ink, width=4)
+
+    elif setting == "prep":
+        # Bright prep counter with tiled wall, open window, cutting board and bowls.
+        draw.rectangle(box, fill=(216, 239, 225))
+        tile = max(62, width // 8)
+        for x in range(left, right + 1, tile):
+            draw.line((x, top, x, bottom), fill=(151, 194, 181), width=3)
+        for y in range(top, bottom + 1, tile):
+            draw.line((left, y, right, y), fill=(151, 194, 181), width=3)
+        window = (left + 30, top + 34, left + round(width * 0.43), top + round(height * 0.42))
+        draw.rectangle(window, fill=(117, 202, 226), outline=ink, width=8)
+        window_mid = (window[0] + window[2]) // 2
+        draw.line((window_mid, window[1], window_mid, window[3]), fill=ink, width=5)
+        draw.line((window[0], (window[1] + window[3]) // 2, window[2], (window[1] + window[3]) // 2), fill=ink, width=5)
+        counter_y = top + round(height * 0.61)
+        draw.rectangle((left, counter_y, right, bottom), fill=(151, 88, 55), outline=ink, width=6)
+        board_left = left + round(width * 0.14) + movement
+        draw.rounded_rectangle((board_left, counter_y - 34, board_left + round(width * 0.31), counter_y + 48), radius=16, fill=(224, 171, 96), outline=ink, width=5)
+        for bowl_index, color in enumerate(((227, 73, 64), (63, 159, 91), (246, 195, 73))):
+            bowl_x = left + round(width * (0.12 + bowl_index * 0.14))
+            draw.pieslice((bowl_x, counter_y - 105, bowl_x + 82, counter_y - 22), 0, 180, fill=color, outline=ink, width=5)
+        for leaf_index in range(5):
+            draw_comic_leaf(draw, board_left + 34 + leaf_index * 27, counter_y - 8 + (leaf_index % 2) * 14, 14, bright=True)
+
+    elif setting == "pantry":
+        # Narrow pantry/wash area with shelves and an animated basil clue trail.
+        draw.rectangle(box, fill=(235, 210, 157))
+        back_left = left + round(width * 0.25)
+        back_right = right - round(width * 0.25)
+        draw.polygon(((left, top), (back_left, top + 70), (back_left, bottom), (left, bottom)), fill=(190, 117, 73), outline=ink)
+        draw.polygon(((right, top), (back_right, top + 70), (back_right, bottom), (right, bottom)), fill=(169, 101, 71), outline=ink)
+        for shelf_index in range(3):
+            shelf_y = top + 92 + shelf_index * round(height * 0.21)
+            draw.line((left + 20, shelf_y, back_left + 18, shelf_y + 18), fill=ink, width=9)
+            draw.line((right - 20, shelf_y, back_right - 18, shelf_y + 18), fill=ink, width=9)
+            for side in (-1, 1):
+                jar_x = back_left - 78 if side < 0 else back_right + 28
+                jar_x += movement // 3 * (1 if shelf_index % 2 else -1)
+                draw.rounded_rectangle((jar_x, shelf_y - 58, jar_x + 48, shelf_y - 5), radius=7, fill=((83, 159, 111), (232, 151, 73), (196, 75, 73))[shelf_index], outline=ink, width=4)
+        sink_y = bottom - round(height * 0.22)
+        draw.rectangle((back_left + 14, sink_y, back_right - 14, bottom), fill=(115, 163, 163), outline=ink, width=6)
+        draw.arc((back_left + 58, sink_y - 76, back_left + 142, sink_y + 12), 180, 350, fill=(51, 65, 70), width=10)
+        for drop in range(3):
+            drop_x = back_left + 99 + ((frame_index + drop * 2) % 6 - 3) * 3
+            drop_y = sink_y - 3 + ((frame_index + drop * 3) % 8) * 12
+            draw.ellipse((drop_x - 5, drop_y - 9, drop_x + 5, drop_y + 9), fill=(74, 180, 216))
+        for leaf_index in range(8):
+            trail_x = left + round(width * (0.18 + leaf_index * 0.085)) + (movement if leaf_index % 2 else 0)
+            trail_y = bottom - 50 - (leaf_index % 3) * 24
+            draw_comic_leaf(draw, trail_x, trail_y, 13, bright=(leaf_index + frame_index) % 2 == 0)
+
+    elif setting == "market":
+        # Outdoor market lane with a moving awning, cart, produce and pennants.
+        sky_end = top + round(height * 0.36)
+        draw.rectangle((left, top, right, sky_end), fill=(132, 210, 220))
+        draw.rectangle((left, sky_end, right, bottom), fill=(222, 177, 116))
+        for stall in range(3):
+            stall_left = left - 40 + stall * round(width * 0.36)
+            stall_right = stall_left + round(width * 0.42)
+            stall_top = top + 65 + (stall % 2) * 45
+            draw.rectangle((stall_left, stall_top + 70, stall_right, bottom), fill=(100, 143, 124), outline=ink, width=5)
+            draw.polygon(((stall_left - 16, stall_top + movement // 3), (stall_right + 16, stall_top - movement // 3), (stall_right - 8, stall_top + 86), (stall_left + 8, stall_top + 86)), fill=(219, 72, 69) if stall % 2 == 0 else (244, 193, 72), outline=ink)
+        cart_x = left + round(width * 0.13) + movement
+        cart_y = bottom - round(height * 0.29)
+        draw.rounded_rectangle((cart_x, cart_y, cart_x + round(width * 0.40), bottom - 58), radius=18, fill=(194, 127, 65), outline=ink, width=7)
+        for wheel_x in (cart_x + 58, cart_x + round(width * 0.34)):
+            draw.ellipse((wheel_x - 32, bottom - 87, wheel_x + 32, bottom - 23), fill=(55, 56, 61), outline=ink, width=6)
+            spoke = frame_index * math.pi / 4
+            draw.line((wheel_x, bottom - 55, wheel_x + math.cos(spoke) * 26, bottom - 55 + math.sin(spoke) * 26), fill=(224, 221, 202), width=4)
+        for basket_index in range(3):
+            basket_x = cart_x + 36 + basket_index * 78
+            draw.ellipse((basket_x, cart_y - 47, basket_x + 76, cart_y + 22), fill=(221, 155, 71), outline=ink, width=5)
+            draw_comic_leaf(draw, basket_x + 38, cart_y - 44 - (basket_index % 2) * 10, 18, bright=True)
+        flag_y = top + 32
+        for flag in range(8):
+            flag_x = left + flag * round(width / 7)
+            draw.polygon(((flag_x, flag_y), (flag_x + 34, flag_y + 8 + movement // 3), (flag_x + 17, flag_y + 55)), fill=((243, 76, 74), (249, 197, 73), (54, 161, 153))[flag % 3], outline=ink)
+
+    elif setting == "wok":
+        # Close cooking station with a hood, hot wok, flames and moving steam.
+        draw.rectangle(box, fill=(82, 99, 111))
+        tile = max(56, width // 9)
+        for x in range(left, right + 1, tile):
+            draw.line((x, top, x, bottom), fill=(118, 137, 146), width=3)
+        for y in range(top, bottom + 1, tile):
+            draw.line((left, y, right, y), fill=(118, 137, 146), width=3)
+        hood_center = left + round(width * 0.34)
+        hood_top = top + 30
+        draw.polygon(((hood_center - 150, hood_top), (hood_center + 150, hood_top), (hood_center + 105, hood_top + 145), (hood_center - 105, hood_top + 145)), fill=(160, 172, 174), outline=ink)
+        stove_y = bottom - round(height * 0.23)
+        draw.rectangle((left, stove_y, right, bottom), fill=(47, 55, 62), outline=ink, width=7)
+        wok_x = left + round(width * (0.30 + 0.035 * detail_variant))
+        wok_y = stove_y - 42
+        draw.ellipse((wok_x - 135, wok_y - 44, wok_x + 135, wok_y + 94), fill=(39, 44, 51), outline=(13, 15, 20), width=11)
+        draw.line((wok_x + 100, wok_y + 30, wok_x + 240, wok_y - 15 + movement), fill=(25, 27, 31), width=24)
+        for flame in range(6):
+            fx = wok_x - 88 + flame * 35
+            flame_h = 42 + ((frame_index + flame + detail_variant) % 4) * 12
+            draw.polygon(((fx - 14, stove_y + 14), (fx, stove_y + 14 - flame_h), (fx + 14, stove_y + 14)), fill=(252, 103, 49) if flame % 2 else (255, 196, 55), outline=(94, 45, 38))
+        for steam in range(4):
+            sx = wok_x - 66 + steam * 45 + movement
+            sy = wok_y - 80 - steam * 13
+            draw.arc((sx - 25, sy - 65, sx + 25, sy + 32), 80, 280, fill=(250, 250, 235), width=9)
+        for leaf_index in range(5):
+            angle = (frame_index + leaf_index) * 0.7
+            leaf_x = wok_x + round(math.cos(angle) * (50 + leaf_index * 8))
+            leaf_y = wok_y - 55 - round(abs(math.sin(angle)) * (70 + leaf_index * 6))
+            draw_comic_leaf(draw, leaf_x, leaf_y, 13, bright=True)
+
+    else:
+        # Serving nook at sunset with a window, table, dish and twinkling lights.
+        draw.rectangle(box, fill=(72, 88, 106))
+        window = (left + 28, top + 32, right - 28, top + round(height * 0.48))
+        draw.rectangle(window, fill=(244, 151, 102), outline=ink, width=8)
+        horizon = window[1] + round((window[3] - window[1]) * 0.60)
+        draw.rectangle((window[0] + 7, horizon, window[2] - 7, window[3] - 7), fill=(112, 85, 132))
+        sunset_x = window[0] + round((window[2] - window[0]) * 0.25) + movement
+        draw.ellipse((sunset_x - 42, horizon - 65, sunset_x + 42, horizon + 19), fill=(255, 221, 105), outline=(151, 76, 69), width=5)
+        for building in range(7):
+            bx = window[0] + 8 + building * round((window[2] - window[0] - 16) / 7)
+            by = horizon - 8 - (building % 3) * 26
+            draw.rectangle((bx, by, bx + 62, window[3] - 7), fill=(74, 67, 93))
+        table_y = bottom - round(height * 0.26)
+        draw.rectangle((left, table_y, right, bottom), fill=(125, 76, 56), outline=ink, width=7)
+        plate_x = left + round(width * 0.30) + movement // 2
+        draw.ellipse((plate_x - 128, table_y - 50, plate_x + 128, table_y + 52), fill=(251, 245, 222), outline=ink, width=7)
+        for leaf_index in range(7):
+            draw_comic_leaf(draw, plate_x - 72 + leaf_index * 24, table_y - 3 + (leaf_index % 3) * 12, 13, bright=True)
+        draw.line((left + 24, top + 22, right - 24, top + 52), fill=(34, 35, 43), width=5)
+        for bulb in range(9):
+            bulb_x = left + 38 + bulb * round((width - 76) / 8)
+            bulb_y = top + 25 + round((bulb_x - left) / max(1, width) * 28)
+            glow = (255, 235, 140) if (bulb + frame_index) % 3 else (255, 188, 85)
+            draw.ellipse((bulb_x - 10, bulb_y - 7, bulb_x + 10, bulb_y + 13), fill=glow, outline=ink, width=3)
+
+    return setting
+
+
 def build_motion_comic_frame(
     scene: dict[str, Any],
     *,
@@ -2549,137 +2775,47 @@ def build_motion_comic_frame(
         fill=(245, 224, 183),
     )
 
-    # A stylized Bangkok kitchen/market set. Props change with the story beat.
-    counter_y = round(height * 0.66)
-    draw.rectangle(
-        (
+    setting = draw_comic_environment(
+        draw,
+        scene,
+        scene_index=scene_index,
+        frame_index=frame_index,
+        box=(
             panel_margin + 12,
-            counter_y,
+            action_top,
             width - panel_margin - 12,
             height - panel_margin - 12,
         ),
-        fill=(160, 91, 55),
-        outline=(32, 31, 38),
-        width=6,
     )
-    shelf_y = action_top + 88
-    draw.line(
-        (panel_margin + 34, shelf_y, width - panel_margin - 34, shelf_y),
-        fill=(44, 38, 42),
-        width=10,
-    )
-    for jar_index in range(4):
-        jar_x = panel_margin + 58 + jar_index * round(width * 0.13)
-        jar_h = 44 + (jar_index % 2) * 12
-        draw.rounded_rectangle(
-            (jar_x, shelf_y - jar_h, jar_x + 42, shelf_y - 4),
-            radius=8,
-            fill=((249, 190, 86), (218, 90, 83), (102, 171, 96), (91, 143, 189))[jar_index],
-            outline=(31, 29, 37),
-            width=4,
-        )
 
-    prop_x = round(width * 0.28)
-    prop_y = round(height * 0.69)
-    motion = round(math.sin(frame_index * math.pi / 3) * 9)
-    if beat in (1, 2, 3):
-        # Woven basil basket and a moving trail of leaves.
-        draw.rounded_rectangle(
-            (prop_x - 92, prop_y - 80, prop_x + 92, prop_y + 58),
-            radius=22,
-            fill=(201, 145, 72),
-            outline=(43, 35, 38),
-            width=8,
-        )
-        for stripe in range(-70, 80, 28):
+    # Action lines belong only to energetic market and wok shots. Quieter scenes
+    # use small sparkles so the six sets do not share the same visual silhouette.
+    if setting in {"market", "wok"}:
+        line_center = (round(width * 0.48), round(height * 0.56))
+        for ray in range(10):
+            angle = (ray / 10) * math.tau + frame_index * 0.015
+            start_r, end_r = 175, 235 + (ray % 3) * 18
             draw.line(
-                (prop_x + stripe, prop_y - 68, prop_x + stripe + 24, prop_y + 45),
-                fill=(128, 82, 47),
-                width=4,
-            )
-        for leaf_index in range(7):
-            leaf_x = prop_x - 72 + leaf_index * 24 + (motion if leaf_index % 2 else 0)
-            leaf_y = prop_y - 88 - (leaf_index % 3) * 15
-            draw_comic_leaf(
-                draw,
-                leaf_x,
-                leaf_y,
-                18,
-                bright=(leaf_index + frame_index) % 2 == 0,
+                (
+                    line_center[0] + math.cos(angle) * start_r,
+                    line_center[1] + math.sin(angle) * start_r,
+                    line_center[0] + math.cos(angle) * end_r,
+                    line_center[1] + math.sin(angle) * end_r,
+                ),
+                fill=(57, 50, 62),
+                width=5,
             )
     else:
-        # Wok, flame, steam, and the finished plate all animate.
-        draw.ellipse(
-            (prop_x - 115, prop_y - 48, prop_x + 115, prop_y + 82),
-            fill=(40, 45, 55),
-            outline=(16, 18, 24),
-            width=10,
-        )
-        draw.arc(
-            (prop_x - 96, prop_y - 36, prop_x + 96, prop_y + 54),
-            0,
-            180,
-            fill=(141, 154, 166),
-            width=5,
-        )
-        if beat == 4:
-            for flame_index in range(5):
-                fx = prop_x - 68 + flame_index * 34
-                flame_h = 48 + ((frame_index + flame_index) % 3) * 10
-                draw.polygon(
-                    (
-                        (fx - 15, prop_y + 86),
-                        (fx, prop_y + 86 - flame_h),
-                        (fx + 15, prop_y + 86),
-                    ),
-                    fill=(250, 112, 53),
-                    outline=(71, 37, 39),
-                )
-        for steam_index in range(3):
-            sx = prop_x - 44 + steam_index * 42 + motion // 2
-            sy = prop_y - 84 - steam_index * 13
-            draw.arc(
-                (sx - 22, sy - 58, sx + 22, sy + 24),
-                80,
-                270,
-                fill=(255, 255, 245),
-                width=8,
-            )
-        if beat == 5:
-            draw.ellipse(
-                (prop_x - 124, prop_y - 14, prop_x + 124, prop_y + 82),
-                fill=(253, 247, 225),
-                outline=(33, 32, 40),
-                width=7,
-            )
-            for leaf_index in range(5):
-                draw_comic_leaf(
-                    draw,
-                    prop_x - 52 + leaf_index * 25,
-                    prop_y + 18 + (leaf_index % 2) * 12,
-                    14,
-                    bright=True,
-                )
-
-    # Comic action lines make the activity visible even before the camera move.
-    line_center = (round(width * 0.54), round(height * 0.55))
-    for ray in range(10):
-        angle = (ray / 10) * math.tau + frame_index * 0.015
-        start_r, end_r = 180, 245 + (ray % 3) * 18
-        draw.line(
-            (
-                line_center[0] + math.cos(angle) * start_r,
-                line_center[1] + math.sin(angle) * start_r,
-                line_center[0] + math.cos(angle) * end_r,
-                line_center[1] + math.sin(angle) * end_r,
-            ),
-            fill=(57, 50, 62),
-            width=5,
-        )
+        for sparkle in range(6):
+            sx = panel_margin + 54 + (sparkle * 97 + scene_index * 31) % max(100, width - panel_margin * 2 - 108)
+            sy = action_top + 54 + (sparkle * 113 + frame_index * 7) % max(120, height - action_top - panel_margin - 150)
+            radius = 7 + (sparkle + frame_index) % 5
+            draw.line((sx - radius, sy, sx + radius, sy), fill=(255, 245, 196), width=4)
+            draw.line((sx, sy - radius, sx, sy + radius), fill=(255, 245, 196), width=4)
 
     draw_mali_character(
         base,
-        center_x=round(width * 0.70),
+        center_x=round(width * (0.70 if scene_index % 2 == 0 else 0.73)),
         foot_y=height - panel_margin - 20,
         scale=0.84 if height > width else 0.64,
         frame_index=frame_index,
