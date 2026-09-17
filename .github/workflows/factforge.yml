@@ -37,7 +37,6 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
-            sadtalker-requirements.txt
 
       - name: Cache local model
         uses: actions/cache@v4
