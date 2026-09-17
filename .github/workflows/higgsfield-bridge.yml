@@ -1,0 +1,38 @@
+name: Stage Higgsfield video privately
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: Higgsfield MP4 URL
+        required: true
+        type: string
+      title:
+        description: YouTube title
+        required: true
+        default: Mali Dubai Solo Travel
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get OIDC token
+        id: oidc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('factforge-ai');
+            core.setOutput('token', token);
+      - name: Stage private upload
+        env:
+          FACTFORGE_URL: https://factforge-ai.stony-dove-6282.chatgpt.site
+          ACTIONS_ID_TOKEN: ${{ steps.oidc.outputs.token }}
+          HIGGSFIELD_VIDEO_URL: ${{ inputs.video_url }}
+          VIDEO_TITLE: ${{ inputs.title }}
+        run: python higgsfield_bridge.py
