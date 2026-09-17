@@ -498,6 +498,15 @@ def video_profile_for_topic(topic: str) -> dict[str, Any] | None:
 
 def video_profile_for_focus(focus: str) -> dict[str, Any]:
     lowered = focus.lower().strip()
+    for profile in VIDEO_PROFILES:
+        if lowered == str(profile["topic"]).lower():
+            return profile
+    if "motion-comic" in lowered or "mali's original" in lowered:
+        return next(
+            profile
+            for profile in VIDEO_PROFILES
+            if profile.get("kind") == "comic"
+        )
     best: tuple[int, dict[str, Any]] | None = None
     for profile in VIDEO_PROFILES:
         score = sum(
@@ -886,6 +895,10 @@ Allowed source evidence:
             )
         try:
             raw = model_json(attempt_prompt, 4_000 if video_format == "short" else 7_500)
+            if comic_mode:
+                raw_title = str(raw.get("title", "")).strip()
+                if raw_title and "mali" not in raw_title.lower():
+                    raw["title"] = f"Mali and {raw_title}"[:100]
             return normalize_content_pack(
                 raw,
                 topic=topic,
