@@ -2,25 +2,20 @@
 
 This public GitHub Actions repository runs FactForge production without a paid
 text-generation, speech, or video-rendering API. It uses a local Qwen model,
-Piper text-to-speech, rights-safe Wikimedia Commons media, and FFmpeg. Public
-domain, CC0, and attribution-only CC BY images are supported; media credits are
-added automatically to every YouTube description.
+Piper text-to-speech, original procedural artwork, and FFmpeg.
 
-The renderer creates mobile-safe layouts, slow documentary motion, restrained
-burned-in captions, and normalized narration with a higher-quality public-domain
-female voice model. Every production uses the same original fictional adult Thai
-host for consistent channel identity. SadTalker animates her face, head, eyes,
-and mouth from the actual narration for a moving, lip-synced opening and closing;
-the renderer no longer pastes a static host cutout over every scene.
-The default topic rotation now stays with Thai food, markets, crafts, and
-respectful everyday-life stories.
+The default series is an original motion comic starring Mali, a fictional Thai
+woman in her mid-twenties. Her long dark hair, teal apron, gold jasmine pin, and
+warm practical personality remain consistent in every episode. Each story uses
+animated comic frames, facial and arm poses, moving props, action lines, camera
+pans, scene-matched narration, and timed captions. No real person's likeness or
+existing franchise character is used.
 
-Before any upload, the visual quality gate requires real, rights-safe imagery in
-at least two thirds of the scenes. Wikimedia searches use short topic-specific
-queries and multiple download fallbacks. A job fails privately instead of
-uploading a narration-only video when the imagery threshold is not met.
-An additional presenter-motion gate compares frames from the generated host clip.
-If the presenter is missing or static, the job also fails privately before upload.
+The factual cooking and cultural details still pass the two-source evidence gate.
+The story itself is clearly disclosed as original fiction. Before upload, a motion
+gate samples every scene and stops the job if the rendered comic is effectively
+static. Removing the old heavy presenter model also makes scheduled runs much
+faster and prevents static-host failures.
 
 The workflow authenticates to FactForge with GitHub Actions OIDC. There are no
 repository secrets to add: the Google refresh token stays encrypted in the

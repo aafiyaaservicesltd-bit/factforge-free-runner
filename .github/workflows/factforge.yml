@@ -19,14 +19,12 @@ jobs:
   produce:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     env:
       FACTFORGE_URL: https://factforge-ai.stony-dove-6282.chatgpt.site
       OLLAMA_MODEL: qwen2.5:3b
-      PIPER_VOICE: en_US-ljspeech-high
+      PIPER_VOICE: en_US-hfc_female-medium
       PIPER_DATA_DIR: /tmp/piper-voices
-      SADTALKER_DIR: ${{ github.workspace }}/.cache/SadTalker
-      HOST_ANIMATOR: sadtalker
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out runner
@@ -47,38 +45,13 @@ jobs:
           path: ~/.ollama/models
           key: ollama-qwen25-3b-v1
 
-      - name: Cache lifelike presenter
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SADTALKER_DIR }}
-          key: sadtalker-animated-presenter-v1
-
       - name: Install free local tools
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core git
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           python -m pip install --disable-pip-version-check -r requirements.txt
-          python -m pip install --disable-pip-version-check \
-            torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
-            --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install --disable-pip-version-check -r sadtalker-requirements.txt
-          if [ ! -f "$SADTALKER_DIR/inference.py" ]; then
-            mkdir -p "$(dirname "$SADTALKER_DIR")"
-            git clone --depth 1 https://github.com/OpenTalker/SadTalker.git "$SADTALKER_DIR"
-          fi
-          mkdir -p "$SADTALKER_DIR/checkpoints"
-          if [ ! -s "$SADTALKER_DIR/checkpoints/SadTalker_V0.0.2_256.safetensors" ]; then
-            curl --proto '=https' --tlsv1.2 -fL --retry 3 \
-              https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/SadTalker_V0.0.2_256.safetensors \
-              -o "$SADTALKER_DIR/checkpoints/SadTalker_V0.0.2_256.safetensors"
-          fi
-          if [ ! -s "$SADTALKER_DIR/checkpoints/mapping_00109-model.pth.tar" ]; then
-            curl --proto '=https' --tlsv1.2 -fL --retry 3 \
-              https://github.com/OpenTalker/SadTalker/releases/download/v0.0.2-rc/mapping_00109-model.pth.tar \
-              -o "$SADTALKER_DIR/checkpoints/mapping_00109-model.pth.tar"
-          fi
           curl --proto '=https' --tlsv1.2 -fsSL https://ollama.com/install.sh | sh
           mkdir -p "$PIPER_DATA_DIR"
           python -m piper.download_voices --data-dir "$PIPER_DATA_DIR" "$PIPER_VOICE"

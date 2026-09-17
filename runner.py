@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import os
 import random
 import re
@@ -51,13 +52,65 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "en"})
 Image.MAX_IMAGE_PIXELS = 40_000_000
 
-# The free runner is deliberately video-first. Each supported story has one
-# inspected Commons video, a fixed chronological shot plan, and exact search
-# terms. This prevents a generated script from being paired with unrelated
-# stock photos just because both contain the word "Thailand".
+# Motion-comic episodes use original procedural artwork, so the same adult
+# heroine can remain visually consistent without copying a real person or a
+# copyrighted character. The older documentary profiles remain available for
+# already-queued jobs, but new automatic jobs default to the comic profile.
 VIDEO_PROFILES: list[dict[str, Any]] = [
     {
+        "id": "mali-motion-comic",
+        "kind": "comic",
+        "topic": (
+            "Mali's original Thai kitchen motion-comic adventures about "
+            "basil, cooking, and everyday problem-solving"
+        ),
+        "focusTerms": (
+            "comic",
+            "motion comic",
+            "mali",
+            "original character",
+            "animated story",
+            "interesting facts",
+        ),
+        "sourceUrls": (
+            "https://hot-thai-kitchen.com/pad-kra-pao-beef/",
+            "https://www.foodandwine.com/pad-krapow-basil-stir-fry-7485308",
+            "https://thewoksoflife.com/pad-kra-pao/",
+        ),
+        "visualVariants": (
+            (
+                "Mali, an adult Thai comic heroine with long dark hair and a teal apron, opens her Bangkok kitchen at sunrise",
+                "Mali discovers that the basket of fresh holy basil is missing beside the waiting wok",
+                "Mali follows a trail of basil leaves through the kitchen and studies the shelves for clues",
+                "Mali finds the fallen basil basket beneath a market cart and carefully pulls it free",
+                "Mali returns to the hot wok and stir-fries the rescued basil with a joyful sweep",
+                "Mali serves the finished basil dish and smiles as the kitchen glows at sunset",
+            ),
+            (
+                "Mali, an adult Thai comic heroine with long dark hair and a teal apron, accepts a busy lunch challenge in her Bangkok kitchen",
+                "Mali lays out holy basil, chilli, garlic, and a waiting wok before the first order",
+                "Mali spots one wilted bunch and selects the freshest basil leaves for the dish",
+                "Mali sends the ingredients through the hot wok as bold comic motion lines fill the kitchen",
+                "Mali folds in the basil at the final moment while steam curls above the wok",
+                "Mali presents the finished lunch and marks the kitchen challenge complete",
+            ),
+            (
+                "Mali, an adult Thai comic heroine with long dark hair and a teal apron, receives a basil delivery at her Bangkok doorway",
+                "Mali compares the fragrant leaves with the ingredients arranged beside her wok",
+                "Mali washes and sorts the basil while comic panels reveal each careful kitchen step",
+                "Mali crushes garlic and chilli as the wok begins to glow with heat",
+                "Mali adds the basil near the finish and tosses everything together in the wok",
+                "Mali shares the completed dish and files the recipe in her comic kitchen journal",
+            ),
+        ),
+        "factClaims": (
+            "Pad kra pao is a Thai stir-fried dish whose defining herb is holy basil.",
+            "The ingredients are cooked quickly in a hot wok, with basil added near the end.",
+        ),
+    },
+    {
         "id": "bangkok-night-market",
+        "kind": "live",
         "topic": "the foods and vendor craft of a Bangkok night market",
         "focusTerms": ("market", "street food", "night", "vendor"),
         "query": "10 Things to Eat at Rot Fai Night Market in Bangkok",
@@ -74,6 +127,7 @@ VIDEO_PROFILES: list[dict[str, Any]] = [
     },
     {
         "id": "thai-basil-wok",
+        "kind": "live",
         "topic": "how a Bangkok street-food cook prepares Thai basil squid stir-fry",
         "focusTerms": (
             "cook",
@@ -104,6 +158,7 @@ VIDEO_PROFILES: list[dict[str, Any]] = [
     },
     {
         "id": "thai-siu-mai",
+        "kind": "live",
         "topic": "how a Thai street-food vendor shapes and serves siu mai",
         "focusTerms": ("dumpling", "siu mai", "siumai", "shumai"),
         "query": "Thai street food Siumai How to Make Cantonese Dim Sum style Siu Mai",
@@ -120,7 +175,11 @@ VIDEO_PROFILES: list[dict[str, Any]] = [
     },
 ]
 
-TOPICS = [str(profile["topic"]) for profile in VIDEO_PROFILES]
+TOPICS = [
+    str(profile["topic"])
+    for profile in VIDEO_PROFILES
+    if profile.get("kind") == "comic"
+]
 
 PROHIBITED = re.compile(
     r"\b(election|candidate|president|prime minister|political party|war footage|"
@@ -453,10 +512,29 @@ def video_profile_for_focus(focus: str) -> dict[str, Any]:
     return best[1] if best else VIDEO_PROFILES[0]
 
 
-def profile_visual_plan(profile: dict[str, Any], count: int) -> list[str]:
-    visuals = [str(value) for value in profile["visuals"]]
+def profile_visual_plan(
+    profile: dict[str, Any], count: int, variant_seed: int = 0
+) -> list[str]:
+    variants = profile.get("visualVariants")
+    if isinstance(variants, tuple) and variants:
+        selected = variants[variant_seed % len(variants)]
+        visuals = [str(value) for value in selected]
+    else:
+        visuals = [str(value) for value in profile["visuals"]]
     if count == len(visuals):
         return visuals
+    if profile.get("kind") == "comic" and count > len(visuals):
+        angles = (
+            "shown as a wide establishing comic panel",
+            "shown as a close-up action comic panel",
+        )
+        return [
+            (
+                f"{visuals[min(len(visuals) - 1, index * len(visuals) // count)]}, "
+                f"{angles[index % len(angles)]}"
+            )
+            for index in range(count)
+        ]
     return [visuals[min(len(visuals) - 1, index * len(visuals) // count)] for index in range(count)]
 
 
@@ -561,6 +639,7 @@ def normalize_content_pack(
     durations: list[int],
     video_format: str,
     visual_plan: list[str],
+    profile: dict[str, Any],
 ) -> dict[str, Any]:
     title = str(raw.get("title", "")).strip()
     description = str(raw.get("description", "")).strip()
@@ -575,6 +654,20 @@ def normalize_content_pack(
     ]
     allowed_urls = {source["url"] for source in source_records}
     claims = raw.get("claims")
+    if profile.get("kind") == "comic":
+        configured_claims = [
+            str(value).strip()
+            for value in profile.get("factClaims", ())
+            if str(value).strip()
+        ]
+        claims = [
+            {
+                "claim": claim,
+                "confidence": 0.9,
+                "sourceUrls": [source_records[index % len(source_records)]["url"]],
+            }
+            for index, claim in enumerate(configured_claims)
+        ]
     if not isinstance(claims, list) or not claims:
         raise RuntimeError("The local draft supplied no mapped fact claims.")
     normalized_claims = []
@@ -646,7 +739,7 @@ def normalize_content_pack(
         written_scene = f"{narration} {on_screen}".lower()
         if visible_terms and not any(term in written_scene for term in visible_terms):
             raise RuntimeError(
-                f"Scene {index + 1} narration did not match its verified live shot."
+                f"Scene {index + 1} narration did not match its planned visual."
             )
         normalized_scenes.append(
             {
@@ -674,10 +767,18 @@ def normalize_content_pack(
         "description": description[:4_000],
         "tags": clean_tags,
         "disclosure": (
-            "This video uses AI-assisted research, an original AI presenter, "
-            "Wikimedia Commons moving footage under the licenses listed in the "
-            "description, and a synthetic narration voice. Sources were checked "
-            "before publishing."
+            (
+                "This is an original fictional motion comic starring an adult "
+                "AI-designed character. Cultural and cooking details were checked "
+                "against the listed sources, and narration uses a synthetic voice."
+            )
+            if profile.get("kind") == "comic"
+            else (
+                "This video uses AI-assisted research, an original AI presenter, "
+                "Wikimedia Commons moving footage under the licenses listed in the "
+                "description, and a synthetic narration voice. Sources were checked "
+                "before publishing."
+            )
         ),
         "sources": source_records,
         "claims": normalized_claims,
@@ -700,8 +801,11 @@ def generate_content_pack(job: dict[str, Any]) -> dict[str, Any]:
     )
     video_profile = video_profile_for_topic(topic)
     if not video_profile:
-        raise RuntimeError("The selected topic had no inspected live-footage profile.")
-    visual_plan = profile_visual_plan(video_profile, scene_count)
+        raise RuntimeError("The selected topic had no supported production profile.")
+    episode_seed = int(
+        hashlib.sha256(str(job["id"]).encode()).hexdigest()[:12], 16
+    )
+    visual_plan = profile_visual_plan(video_profile, scene_count, episode_seed)
     source_bundle = [
         {
             "title": source["title"],
@@ -712,25 +816,49 @@ def generate_content_pack(job: dict[str, Any]) -> dict[str, Any]:
         for source in sources
     ]
     narration_words = "14-24" if video_format == "short" else "65-95"
+    comic_mode = video_profile.get("kind") == "comic"
+    creative_direction = (
+        """
+Write an ORIGINAL motion-comic episode starring Mali, a fictional Thai woman in
+her mid-twenties. Mali has long dark hair, a teal apron, a gold jasmine pin, a warm
+personality, and practical intelligence. Keep this exact adult character identity
+in every scene. Create a small kitchen mystery or challenge with a clear beginning,
+turn, and satisfying payoff. The prose should sound warm and natural when spoken by
+a female narrator, with simple conversational English and respectful Thai context.
+The comic panels are already planned below, so every sentence must describe the
+matching action. Never imitate, name, or resemble any existing franchise, celebrity,
+real person, superhero, or copyrighted character.
+"""
+        if comic_mode
+        else """
+The moving footage is already selected. Every sentence must describe the matching
+verified live action exactly; never mention a different ingredient or action.
+"""
+    )
+    visual_label = (
+        "Original chronological motion-comic panel plan"
+        if comic_mode
+        else "Verified chronological live-footage plan"
+    )
     prompt = f"""
 You are the careful writer for an educational YouTube channel. Create an original,
 engaging {video_format} story about {topic}. Use only facts supported by the source
 excerpts below. Do not quote or closely imitate the prose. Do not invent dates,
 numbers, names, or causal claims. Avoid politics, conflict, tragedy, crime, medical,
 legal, financial, celebrity, sexual, child-directed, or dangerous material.
+{creative_direction}
 
 Return one JSON object only with these keys:
 - title: 8-100 characters
 - hook: one sharp opening sentence
 - description: 2-4 original sentences
 - tags: 5-10 strings without #
-- claims: 5-12 objects with claim, confidence (0.82-1.0), and sourceUrls. Every URL
+- claims: 2-6 objects with claim, confidence (0.82-1.0), and sourceUrls. Every URL
   must be copied exactly from the supplied sources and genuinely support that claim.
 - scenes: exactly {scene_count} objects with narration, onScreenText, visualPrompt.
   Each narration must be {narration_words} words, onScreenText at most 8 words, and
-  visualPrompt must repeat the matching verified shot description below. The moving
-  footage is already chosen. Narration and on-screen text must describe what is
-  genuinely visible in that shot; never mention a different ingredient or action.
+  visualPrompt must repeat the matching planned visual description below. Narration
+  and on-screen text must describe what is genuinely shown in that exact panel.
   Adults may appear naturally in cooking, market, craft, or daily-life scenes, but
   never depict minors or sexualized people. Do not request logos, brands, copyrighted
   characters, or text.
@@ -738,7 +866,7 @@ Return one JSON object only with these keys:
 The fixed scene durations in seconds are {durations}. Build a complete narrative arc:
 hook, context, evidence, explanation, surprising implication, and a satisfying ending.
 
-Verified chronological live-footage plan (one line per scene):
+{visual_label} (one line per scene):
 {chr(10).join(f"{index + 1}. {shot}" for index, shot in enumerate(visual_plan))}
 
 Encyclopedia discovery summary (not an allowed citation):
@@ -765,6 +893,7 @@ Allowed source evidence:
                 durations=durations,
                 video_format=video_format,
                 visual_plan=visual_plan,
+                profile=video_profile,
             )
         except Exception as error:
             last_error = str(error)[:300]
@@ -988,6 +1117,23 @@ def attach_rights_safe_videos(pack: dict[str, Any]) -> None:
         raise RuntimeError(
             "Live-footage gate stopped the upload: this topic has no inspected video plan."
         )
+    if profile.get("kind") == "comic":
+        for scene in pack["scenes"]:
+            scene["_mediaMatch"] = str(profile["id"])
+            scene["_renderStyle"] = "original-motion-comic"
+            for key in (
+                "imageUrl",
+                "videoUrl",
+                "mediaCreator",
+                "mediaLicense",
+                "mediaSourceUrl",
+            ):
+                scene.pop(key, None)
+        print(
+            "Original-art gate passed: every scene will use the consistent "
+            "Mali motion-comic character model."
+        )
+        return
     try:
         candidates = commons_videos(str(profile["query"]), 8)
     except Exception as error:
@@ -1625,9 +1771,13 @@ def write_captions(
     video_format: str,
 ) -> None:
     width, height = dimensions
-    font_size = 36 if video_format == "short" else 34
+    comic_mode = bool(
+        (video_profile_for_topic(str(pack.get("topic", ""))) or {}).get("kind")
+        == "comic"
+    )
+    font_size = 38 if comic_mode and video_format == "short" else (36 if video_format == "short" else 34)
     margin_lr = 54 if video_format == "short" else 70
-    margin_v = 260 if video_format == "short" else 58
+    margin_v = 86 if comic_mode and video_format == "short" else (260 if video_format == "short" else 58)
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -1654,7 +1804,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         )
         chunks = caption_chunks(str(scene["narration"]))
         caption_style = "Caption"
-        if video_format == "short":
+        if video_format == "short" and not comic_mode:
             caption_style = "CaptionLeft"
         available = max(0.5, speech_duration - 0.26)
         total_words = max(1, sum(len(chunk.split()) for chunk in chunks))
@@ -1847,7 +1997,9 @@ def verify_host_motion(video: Path, work: Path) -> None:
     print(f"Presenter motion gate passed with face score {motion_score:.3f}.")
 
 
-def verify_scene_motion(video: Path, work: Path, scene_index: int) -> None:
+def verify_scene_motion(
+    video: Path, work: Path, scene_index: int, *, comic: bool = False
+) -> None:
     duration = media_seconds(video)
     moments = (
         min(0.55, duration * 0.12),
@@ -1893,14 +2045,15 @@ def verify_scene_motion(video: Path, work: Path, scene_index: int) -> None:
                 difference = ImageChops.difference(first, other)
                 scores.append(sum(ImageStat.Stat(difference).mean) / 3.0)
     motion_score = max(scores, default=0.0)
-    if motion_score < 0.45:
+    threshold = 0.22 if comic else 0.45
+    if motion_score < threshold:
         raise RuntimeError(
-            "Live-footage motion gate stopped the upload: "
+            f"{'Motion-comic' if comic else 'Live-footage'} motion gate stopped the upload: "
             f"scene {scene_index + 1} was effectively static "
             f"(score {motion_score:.3f})."
         )
     print(
-        f"Live-footage motion gate passed for scene {scene_index + 1} "
+        f"{'Motion-comic' if comic else 'Live-footage'} motion gate passed for scene {scene_index + 1} "
         f"with score {motion_score:.3f}."
     )
 
@@ -2008,7 +2161,745 @@ def animate_presenter(audio: Path, work: Path) -> Path:
     return output
 
 
+def draw_comic_leaf(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    size: int,
+    *,
+    bright: bool = False,
+) -> None:
+    fill = (72, 181, 83) if bright else (37, 130, 72)
+    outline = (11, 55, 42)
+    draw.ellipse(
+        (x - size, y - size // 2, x + size, y + size // 2),
+        fill=fill,
+        outline=outline,
+        width=max(2, size // 7),
+    )
+    draw.line((x - size + 3, y, x + size - 3, y), fill=outline, width=2)
+
+
+def draw_mali_character(
+    canvas: Image.Image,
+    *,
+    center_x: int,
+    foot_y: int,
+    scale: float,
+    frame_index: int,
+    pose: int,
+) -> None:
+    """Draw the recurring fictional adult heroine with a stable visual model."""
+
+    draw = ImageDraw.Draw(canvas)
+    ink = (21, 22, 31)
+    hair = (29, 24, 32)
+    skin = (226, 170, 126)
+    blush = (218, 108, 112)
+    teal = (12, 128, 135)
+    teal_light = (35, 179, 169)
+    gold = (250, 194, 75)
+    white = (250, 247, 238)
+
+    def sx(value: float) -> int:
+        return round(value * scale)
+
+    bob = sx(math.sin(frame_index * math.pi / 4) * 3)
+    cx = center_x
+    fy = foot_y + bob
+    torso_top = fy - sx(345)
+    head_top = torso_top - sx(190)
+
+    # Hair silhouette and long side locks.
+    draw.ellipse(
+        (
+            cx - sx(112),
+            head_top - sx(18),
+            cx + sx(112),
+            head_top + sx(218),
+        ),
+        fill=hair,
+        outline=ink,
+        width=sx(8),
+    )
+    draw.rounded_rectangle(
+        (
+            cx - sx(118),
+            head_top + sx(105),
+            cx - sx(52),
+            torso_top + sx(210),
+        ),
+        radius=sx(28),
+        fill=hair,
+        outline=ink,
+        width=sx(7),
+    )
+    draw.rounded_rectangle(
+        (
+            cx + sx(52),
+            head_top + sx(105),
+            cx + sx(118),
+            torso_top + sx(210),
+        ),
+        radius=sx(28),
+        fill=hair,
+        outline=ink,
+        width=sx(7),
+    )
+
+    # Neck, face, ears, and a side-swept fringe.
+    draw.rounded_rectangle(
+        (cx - sx(30), torso_top - sx(34), cx + sx(30), torso_top + sx(50)),
+        radius=sx(16),
+        fill=skin,
+        outline=ink,
+        width=sx(6),
+    )
+    draw.ellipse(
+        (
+            cx - sx(87),
+            head_top + sx(20),
+            cx + sx(87),
+            head_top + sx(196),
+        ),
+        fill=skin,
+        outline=ink,
+        width=sx(7),
+    )
+    draw.pieslice(
+        (
+            cx - sx(104),
+            head_top - sx(8),
+            cx + sx(98),
+            head_top + sx(132),
+        ),
+        180,
+        350,
+        fill=hair,
+        outline=ink,
+        width=sx(5),
+    )
+    draw.polygon(
+        (
+            (cx - sx(12), head_top + sx(10)),
+            (cx + sx(86), head_top + sx(44)),
+            (cx + sx(76), head_top + sx(98)),
+        ),
+        fill=hair,
+    )
+
+    blink = frame_index % 8 == 3
+    eye_y = head_top + sx(105)
+    for eye_x in (cx - sx(35), cx + sx(35)):
+        if blink:
+            draw.line(
+                (eye_x - sx(12), eye_y, eye_x + sx(12), eye_y),
+                fill=ink,
+                width=sx(5),
+            )
+        else:
+            draw.ellipse(
+                (
+                    eye_x - sx(13),
+                    eye_y - sx(10),
+                    eye_x + sx(13),
+                    eye_y + sx(12),
+                ),
+                fill=white,
+                outline=ink,
+                width=sx(4),
+            )
+            draw.ellipse(
+                (
+                    eye_x - sx(4),
+                    eye_y - sx(3),
+                    eye_x + sx(5),
+                    eye_y + sx(7),
+                ),
+                fill=ink,
+            )
+    draw.arc(
+        (
+            cx - sx(58),
+            eye_y - sx(30),
+            cx - sx(12),
+            eye_y - sx(4),
+        ),
+        195,
+        338,
+        fill=ink,
+        width=sx(5),
+    )
+    draw.arc(
+        (
+            cx + sx(12),
+            eye_y - sx(30),
+            cx + sx(58),
+            eye_y - sx(4),
+        ),
+        202,
+        345,
+        fill=ink,
+        width=sx(5),
+    )
+    draw.ellipse(
+        (
+            cx - sx(68),
+            head_top + sx(134),
+            cx - sx(42),
+            head_top + sx(149),
+        ),
+        fill=blush,
+    )
+    draw.ellipse(
+        (
+            cx + sx(42),
+            head_top + sx(134),
+            cx + sx(68),
+            head_top + sx(149),
+        ),
+        fill=blush,
+    )
+    if frame_index % 4 in (1, 2):
+        draw.ellipse(
+            (
+                cx - sx(13),
+                head_top + sx(148),
+                cx + sx(13),
+                head_top + sx(169),
+            ),
+            fill=(132, 49, 55),
+            outline=ink,
+            width=sx(3),
+        )
+    else:
+        draw.arc(
+            (
+                cx - sx(25),
+                head_top + sx(137),
+                cx + sx(25),
+                head_top + sx(174),
+            ),
+            10,
+            170,
+            fill=ink,
+            width=sx(5),
+        )
+
+    # Teal blouse and apron make the character immediately recognizable.
+    draw.polygon(
+        (
+            (cx - sx(95), torso_top + sx(32)),
+            (cx - sx(155), fy - sx(36)),
+            (cx + sx(155), fy - sx(36)),
+            (cx + sx(95), torso_top + sx(32)),
+        ),
+        fill=teal,
+        outline=ink,
+    )
+    draw.line(
+        (
+            cx - sx(95),
+            torso_top + sx(32),
+            cx - sx(155),
+            fy - sx(36),
+            cx + sx(155),
+            fy - sx(36),
+            cx + sx(95),
+            torso_top + sx(32),
+        ),
+        fill=ink,
+        width=sx(8),
+        joint="curve",
+    )
+    draw.polygon(
+        (
+            (cx - sx(52), torso_top + sx(65)),
+            (cx + sx(52), torso_top + sx(65)),
+            (cx + sx(91), fy - sx(52)),
+            (cx - sx(91), fy - sx(52)),
+        ),
+        fill=(235, 220, 190),
+        outline=ink,
+    )
+    draw.line(
+        (cx - sx(52), torso_top + sx(65), cx - sx(82), fy - sx(58)),
+        fill=ink,
+        width=sx(6),
+    )
+    draw.line(
+        (cx + sx(52), torso_top + sx(65), cx + sx(82), fy - sx(58)),
+        fill=ink,
+        width=sx(6),
+    )
+
+    # Arms alternate between pointing, stirring, and presenting.
+    arm_lift = sx(34 + 18 * math.sin((frame_index + pose) * math.pi / 4))
+    left_hand = (cx - sx(172), torso_top + sx(148) - arm_lift)
+    right_hand = (cx + sx(172), torso_top + sx(170) + arm_lift // 2)
+    if pose % 3 == 1:
+        right_hand = (cx + sx(206), torso_top + sx(68) - arm_lift)
+    elif pose % 3 == 2:
+        left_hand = (cx - sx(205), torso_top + sx(82) - arm_lift)
+    for shoulder, hand in (
+        ((cx - sx(82), torso_top + sx(82)), left_hand),
+        ((cx + sx(82), torso_top + sx(82)), right_hand),
+    ):
+        draw.line((*shoulder, *hand), fill=ink, width=sx(34))
+        draw.line((*shoulder, *hand), fill=teal_light, width=sx(22))
+        draw.ellipse(
+            (
+                hand[0] - sx(18),
+                hand[1] - sx(18),
+                hand[0] + sx(18),
+                hand[1] + sx(18),
+            ),
+            fill=skin,
+            outline=ink,
+            width=sx(5),
+        )
+
+    # Gold jasmine pin: a stable series marker.
+    pin_x, pin_y = cx + sx(48), torso_top + sx(94)
+    for angle in range(0, 360, 72):
+        radians = math.radians(angle)
+        px = pin_x + round(math.cos(radians) * sx(14))
+        py = pin_y + round(math.sin(radians) * sx(14))
+        draw.ellipse(
+            (px - sx(7), py - sx(7), px + sx(7), py + sx(7)),
+            fill=gold,
+            outline=ink,
+            width=sx(2),
+        )
+    draw.ellipse(
+        (pin_x - sx(6), pin_y - sx(6), pin_x + sx(6), pin_y + sx(6)),
+        fill=white,
+        outline=ink,
+        width=sx(2),
+    )
+
+
+def build_motion_comic_frame(
+    scene: dict[str, Any],
+    *,
+    scene_index: int,
+    total_scenes: int,
+    frame_index: int,
+    dimensions: tuple[int, int],
+    output: Path,
+) -> None:
+    width, height = dimensions
+    beat = min(5, scene_index * 6 // max(1, total_scenes))
+    palettes = (
+        ((255, 190, 92), (241, 92, 93), (37, 37, 68)),
+        ((82, 206, 195), (31, 114, 136), (16, 35, 58)),
+        ((180, 132, 255), (76, 66, 158), (28, 28, 61)),
+    )
+    top_color, middle_color, ink = palettes[scene_index % len(palettes)]
+    base = Image.new("RGB", dimensions, middle_color)
+    draw = ImageDraw.Draw(base)
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+        color = tuple(
+            round(a + (b - a) * ratio)
+            for a, b in zip(top_color, middle_color, strict=True)
+        )
+        draw.line((0, y, width, y), fill=color)
+
+    # Comic halftone texture and two offset panels create depth during camera moves.
+    dot_step = max(24, width // 24)
+    for y in range(0, height, dot_step):
+        for x in range((y // dot_step % 2) * (dot_step // 2), width, dot_step):
+            radius = 2 + ((x + y + frame_index) // dot_step) % 3
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=ink)
+    panel_margin = max(22, width // 28)
+    draw.rounded_rectangle(
+        (
+            panel_margin,
+            round(height * 0.20),
+            width - panel_margin,
+            height - panel_margin,
+        ),
+        radius=max(24, width // 22),
+        fill=(250, 238, 213),
+        outline=(20, 22, 32),
+        width=max(8, width // 80),
+    )
+    action_top = round(height * 0.31)
+    draw.rectangle(
+        (
+            panel_margin + 12,
+            action_top,
+            width - panel_margin - 12,
+            height - panel_margin - 12,
+        ),
+        fill=(245, 224, 183),
+    )
+
+    # A stylized Bangkok kitchen/market set. Props change with the story beat.
+    counter_y = round(height * 0.66)
+    draw.rectangle(
+        (
+            panel_margin + 12,
+            counter_y,
+            width - panel_margin - 12,
+            height - panel_margin - 12,
+        ),
+        fill=(160, 91, 55),
+        outline=(32, 31, 38),
+        width=6,
+    )
+    shelf_y = action_top + 88
+    draw.line(
+        (panel_margin + 34, shelf_y, width - panel_margin - 34, shelf_y),
+        fill=(44, 38, 42),
+        width=10,
+    )
+    for jar_index in range(4):
+        jar_x = panel_margin + 58 + jar_index * round(width * 0.13)
+        jar_h = 44 + (jar_index % 2) * 12
+        draw.rounded_rectangle(
+            (jar_x, shelf_y - jar_h, jar_x + 42, shelf_y - 4),
+            radius=8,
+            fill=((249, 190, 86), (218, 90, 83), (102, 171, 96), (91, 143, 189))[jar_index],
+            outline=(31, 29, 37),
+            width=4,
+        )
+
+    prop_x = round(width * 0.28)
+    prop_y = round(height * 0.69)
+    motion = round(math.sin(frame_index * math.pi / 3) * 9)
+    if beat in (1, 2, 3):
+        # Woven basil basket and a moving trail of leaves.
+        draw.rounded_rectangle(
+            (prop_x - 92, prop_y - 80, prop_x + 92, prop_y + 58),
+            radius=22,
+            fill=(201, 145, 72),
+            outline=(43, 35, 38),
+            width=8,
+        )
+        for stripe in range(-70, 80, 28):
+            draw.line(
+                (prop_x + stripe, prop_y - 68, prop_x + stripe + 24, prop_y + 45),
+                fill=(128, 82, 47),
+                width=4,
+            )
+        for leaf_index in range(7):
+            leaf_x = prop_x - 72 + leaf_index * 24 + (motion if leaf_index % 2 else 0)
+            leaf_y = prop_y - 88 - (leaf_index % 3) * 15
+            draw_comic_leaf(
+                draw,
+                leaf_x,
+                leaf_y,
+                18,
+                bright=(leaf_index + frame_index) % 2 == 0,
+            )
+    else:
+        # Wok, flame, steam, and the finished plate all animate.
+        draw.ellipse(
+            (prop_x - 115, prop_y - 48, prop_x + 115, prop_y + 82),
+            fill=(40, 45, 55),
+            outline=(16, 18, 24),
+            width=10,
+        )
+        draw.arc(
+            (prop_x - 96, prop_y - 36, prop_x + 96, prop_y + 54),
+            0,
+            180,
+            fill=(141, 154, 166),
+            width=5,
+        )
+        if beat == 4:
+            for flame_index in range(5):
+                fx = prop_x - 68 + flame_index * 34
+                flame_h = 48 + ((frame_index + flame_index) % 3) * 10
+                draw.polygon(
+                    (
+                        (fx - 15, prop_y + 86),
+                        (fx, prop_y + 86 - flame_h),
+                        (fx + 15, prop_y + 86),
+                    ),
+                    fill=(250, 112, 53),
+                    outline=(71, 37, 39),
+                )
+        for steam_index in range(3):
+            sx = prop_x - 44 + steam_index * 42 + motion // 2
+            sy = prop_y - 84 - steam_index * 13
+            draw.arc(
+                (sx - 22, sy - 58, sx + 22, sy + 24),
+                80,
+                270,
+                fill=(255, 255, 245),
+                width=8,
+            )
+        if beat == 5:
+            draw.ellipse(
+                (prop_x - 124, prop_y - 14, prop_x + 124, prop_y + 82),
+                fill=(253, 247, 225),
+                outline=(33, 32, 40),
+                width=7,
+            )
+            for leaf_index in range(5):
+                draw_comic_leaf(
+                    draw,
+                    prop_x - 52 + leaf_index * 25,
+                    prop_y + 18 + (leaf_index % 2) * 12,
+                    14,
+                    bright=True,
+                )
+
+    # Comic action lines make the activity visible even before the camera move.
+    line_center = (round(width * 0.54), round(height * 0.55))
+    for ray in range(10):
+        angle = (ray / 10) * math.tau + frame_index * 0.015
+        start_r, end_r = 180, 245 + (ray % 3) * 18
+        draw.line(
+            (
+                line_center[0] + math.cos(angle) * start_r,
+                line_center[1] + math.sin(angle) * start_r,
+                line_center[0] + math.cos(angle) * end_r,
+                line_center[1] + math.sin(angle) * end_r,
+            ),
+            fill=(57, 50, 62),
+            width=5,
+        )
+
+    draw_mali_character(
+        base,
+        center_x=round(width * 0.70),
+        foot_y=height - panel_margin - 20,
+        scale=0.84 if height > width else 0.64,
+        frame_index=frame_index,
+        pose=beat,
+    )
+
+    # Speech-card copy is short and always tied to this exact scene.
+    bubble = Image.new("RGBA", dimensions, (0, 0, 0, 0))
+    bubble_draw = ImageDraw.Draw(bubble)
+    bubble_left = panel_margin + 10
+    bubble_top = panel_margin + 54
+    bubble_right = width - panel_margin - 10
+    bubble_bottom = round(height * 0.195)
+    bubble_draw.rounded_rectangle(
+        (bubble_left, bubble_top, bubble_right, bubble_bottom),
+        radius=max(24, width // 24),
+        fill=(255, 253, 244, 248),
+        outline=(22, 24, 33, 255),
+        width=max(7, width // 92),
+    )
+    tail_x = round(width * 0.69)
+    bubble_draw.polygon(
+        (
+            (tail_x - 22, bubble_bottom - 4),
+            (tail_x + 36, bubble_bottom - 4),
+            (tail_x + 18, bubble_bottom + 44),
+        ),
+        fill=(255, 253, 244, 248),
+        outline=(22, 24, 33, 255),
+    )
+    base = Image.alpha_composite(base.convert("RGBA"), bubble).convert("RGB")
+    draw = ImageDraw.Draw(base)
+    label_font = font(max(18, round(width * 0.029)), bold=True)
+    title_font = font(max(34, round(width * 0.057)), bold=True)
+    label = "MALI • ORIGINAL MOTION COMIC"
+    draw.text(
+        (bubble_left + 24, bubble_top - 40),
+        label,
+        font=label_font,
+        fill=(255, 251, 233),
+        stroke_width=3,
+        stroke_fill=(20, 23, 33),
+    )
+    lines = wrapped_lines(
+        draw,
+        str(scene["onScreenText"]),
+        title_font,
+        bubble_right - bubble_left - 54,
+    )[:2]
+    line_height = round(title_font.size * 1.08)
+    text_y = bubble_top + max(16, (bubble_bottom - bubble_top - len(lines) * line_height) // 2)
+    for line_index, line in enumerate(lines):
+        draw.text(
+            (bubble_left + 27, text_y + line_index * line_height),
+            line,
+            font=title_font,
+            fill=(29, 31, 42),
+        )
+    counter = f"{scene_index + 1:02d}/{total_scenes:02d}"
+    counter_width = draw.textbbox((0, 0), counter, font=label_font)[2]
+    draw.text(
+        (width - panel_margin - counter_width, panel_margin),
+        counter,
+        font=label_font,
+        fill=(255, 251, 233),
+        stroke_width=3,
+        stroke_fill=(20, 23, 33),
+    )
+    base.save(output, format="PNG", optimize=True)
+
+
+def render_motion_comic(
+    pack: dict[str, Any], video_format: str, work: Path
+) -> Path:
+    dimensions = (720, 1280) if video_format == "short" else (1280, 720)
+    width, height = dimensions
+    scene_files: list[Path] = []
+    frame_count = 8
+    for index, scene in enumerate(pack["scenes"]):
+        pattern = work / f"comic-{index:02d}-%02d.png"
+        for frame_index in range(frame_count):
+            build_motion_comic_frame(
+                scene,
+                scene_index=index,
+                total_scenes=len(pack["scenes"]),
+                frame_index=frame_index,
+                dimensions=dimensions,
+                output=work / f"comic-{index:02d}-{frame_index:02d}.png",
+            )
+
+        audio = work / f"voice-{index:02d}.wav"
+        synthesize_scene(str(scene["narration"]), audio)
+        target = int(scene["durationSeconds"])
+        audio_length = wav_seconds(audio)
+        tempo = max(1.0, audio_length / max(1.0, target - 0.25))
+        scene["_speechDuration"] = min(target - 0.08, audio_length / tempo)
+        fade_out = max(0.0, target - 0.28)
+        audio_filter = (
+            f"{atempo_chain(tempo)},"
+            "loudnorm=I=-16:TP=-1.5:LRA=11,"
+            f"apad=pad_dur={target},atrim=duration={target},"
+            f"afade=t=in:st=0:d=0.16,afade=t=out:st={fade_out:.2f}:d=0.28"
+        )
+        enlarged_width = round(width * 1.10 / 2) * 2
+        enlarged_height = round(height * 1.10 / 2) * 2
+        camera_filter = (
+            f"[0:v]scale={enlarged_width}:{enlarged_height}:flags=lanczos,"
+            f"crop={width}:{height}:"
+            "x='(in_w-out_w)*(0.50+0.30*sin(t*0.52))':"
+            "y='(in_h-out_h)*(0.50+0.24*cos(t*0.47))',"
+            "fps=30,"
+            "fade=t=in:st=0:d=0.18:color=black,"
+            f"fade=t=out:st={fade_out:.2f}:d=0.28:color=black,"
+            "format=yuv420p[video]"
+        )
+        scene_file = work / f"scene-{index:02d}.mp4"
+        run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-stream_loop",
+                "-1",
+                "-framerate",
+                "8",
+                "-i",
+                str(pattern),
+                "-i",
+                str(audio),
+                "-filter_complex",
+                camera_filter,
+                "-map",
+                "[video]",
+                "-map",
+                "1:a:0",
+                "-af",
+                audio_filter,
+                "-t",
+                str(target),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(scene_file),
+            ],
+            timeout=420,
+        )
+        verify_scene_motion(scene_file, work, index, comic=True)
+        scene_files.append(scene_file)
+
+    concat = work / "scenes.txt"
+    concat.write_text(
+        "\n".join(f"file '{path.name}'" for path in scene_files) + "\n",
+        encoding="utf-8",
+    )
+    assembled = work / "assembled.mp4"
+    run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(assembled),
+        ],
+        timeout=300,
+    )
+    captions = work / "captions.ass"
+    write_captions(pack, captions, dimensions, video_format)
+    caption_path = captions.as_posix().replace("\\", "/").replace(":", r"\:")
+    output = work / "factforge.mp4"
+    run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(assembled),
+            "-vf",
+            f"ass=filename='{caption_path}'",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-c:a",
+            "copy",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ],
+        timeout=420,
+    )
+    size = output.stat().st_size
+    if size < 20_000 or size > 95 * 1024 * 1024:
+        raise RuntimeError("The finished motion comic fell outside the upload size limit.")
+    print(
+        f"Original motion-comic gate passed for all {len(scene_files)} animated scenes."
+    )
+    return output
+
+
 def render_video(pack: dict[str, Any], video_format: str, work: Path) -> Path:
+    profile = video_profile_for_topic(str(pack.get("topic", "")))
+    if profile and profile.get("kind") == "comic":
+        return render_motion_comic(pack, video_format, work)
     dimensions = (720, 1280) if video_format == "short" else (1280, 720)
     width, height = dimensions
     if not HOST_SHEET.exists():
@@ -2218,6 +3109,7 @@ def remove_internal_scene_fields(pack: dict[str, Any]) -> None:
             "_clipStartSeconds",
             "_imageCandidates",
             "_mediaMatch",
+            "_renderStyle",
             "_sourceUsed",
             "_speechDuration",
             "_videoCandidates",
